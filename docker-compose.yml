@@ -1,7 +1,4 @@
-version: '3.8'
-
 services:
-  # PostgreSQL (Alpine - Lightweight DB)
   postgres_db:
     image: postgres:15-alpine
     container_name: food_postgres
@@ -12,16 +9,14 @@ services:
     ports:
       - "5432:5432"
 
-  # Redis (Alpine - Lightweight Cache)
   redis_cache:
     image: redis:7-alpine
     container_name: food_redis
     ports:
       - "6379:6379"
 
-  # Kafka (KRaft mode - strictly 256MB RAM limit)
   kafka:
-    image: bitnami/kafka:latest
+    image: bitnami/kafka:3.7
     container_name: food_kafka
     ports:
       - "9092:9092"
@@ -33,4 +28,4 @@ services:
       - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@127.0.0.1:9093
       - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
-      - KAFKA_HEAP_OPTS=-Xmx256m -Xms256m  
+      - KAFKA_HEAP_OPTS=-Xmx256m -Xms256m
