@@ -1,12 +1,12 @@
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session, joinedload
-import models, database
-from typing import List
+from sqlalchemy.orm import Session
+import database, models
+import redis
+import json
 
-app = FastAPI(title="Restaurant Service - PuneFood Express")
+app = FastAPI()
 
-# --- 1. CORS Setup ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,39 +15,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Database Tables Create Karna
 models.Base.metadata.create_all(bind=database.engine)
 
-# --- API Endpoints ---
+# 🚀 REDIS CONNECTION SETUP
+try:
+    redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+except Exception as e:
+    print("Redis connection failed:", e)
 
-@app.get("/")
-def status():
-    return {
-        "service": "Pune Restaurant Service", 
-        "status": "Online",
-        "city": "Pune"
-    }
-
-# Get all restaurants with their menu items
 @app.get("/restaurants")
-def get_restaurants(area: str = None, db: Session = Depends(database.get_db)):
-    query = db.query(models.Restaurant).options(joinedload(models.Restaurant.items))
-    if area:
-        query = query.filter(models.Restaurant.area.ilike(f"%{area}%"))
-    return query.all()
-
-# Get details of a single restaurant
-@app.get("/restaurants/{res_id}")
-def get_restaurant_detail(res_id: int, db: Session = Depends(database.get_db)):
-    restaurant = db.query(models.Restaurant).options(joinedload(models.Restaurant.items)).filter(models.Restaurant.id == res_id).first()
-    if not restaurant:
-        raise HTTPException(status_code=404, detail="Restaurant not found")
-    return restaurant
-
-# Get menu for a specific restaurant
-@app.get("/menu/{res_id}")
-def get_menu(res_id: int, db: Session = Depends(database.get_db)):
-    menu = db.query(models.MenuItem).filter(models.MenuItem.restaurant_id == res_id).all()
-    if not menu:
-        raise HTTPException(status_code=404, detail="No menu found for this restaurant")
-    return menu
+def get_restaurants(db: Session = Depends(database.get_db)):
+    # 1. Pehle Redis Cache mein check karo
+    cached_menu = redis_client.get("pune_restaurants_menu")
+    if cached_menu:
+        print("⚡ Data served from REDIS CACHE!")
+        return json.loads(cached_menu)
+    
+    # 2. Agar Cache mein nahi hai, toh Database se lo
+    print("🐢 Data served from DATABASE (Caching it now...)")
+    restaurants = db.query(models.Restaurant).all()
+    
+    result = []
+    for r in restaurants:
+        items = db.query(models.MenuItem).filter(models.MenuItem.restaurant_id == r.id).all()
+        result.append({
+            "id": r.id, "name": r.name, "rating": r.rating,
+            "items": [{"id": i.id, "name": i.name, "price": i.price} for i in items]
+        })
+    
+    # 3. Agli baar ke liye Redis mein Cache save kar do (1 hour ke liye)
+    redis_client.setex("pune_restaurants_menu", 3600, json.dumps(result))
+    
+    return result
