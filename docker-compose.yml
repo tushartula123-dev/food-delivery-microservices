@@ -16,7 +16,7 @@ services:
       - "6379:6379"
 
   kafka:
-    image: apache/kafka:3.4
+    image: bitnami/kafka:latest
     container_name: food_kafka
     ports:
       - "9092:9092"
