@@ -2,16 +2,37 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Search, ShoppingCart, X, LogOut, Home, ClipboardList, Bell, MapPin, RotateCcw, QrCode, Wallet, PlusCircle, CheckCircle, ChefHat, Bike, Phone, Receipt, Calendar, Key, IndianRupee } from 'lucide-react';
 
+// 🔥 JWT FIX: AXIOS INTERCEPTOR 🔥
+// Ye har ek API request ke header mein tumhara JWT token daal dega
+axios.interceptors.request.use(
+  (config) => {
+    const token = sessionStorage.getItem('token');
+    if (token) {
+      config.headers['Authorization'] = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(sessionStorage.getItem('isLoggedIn') === 'true');
   const [user, setUser] = useState(sessionStorage.getItem('userName'));
   const [userId, setUserId] = useState(sessionStorage.getItem('userId'));
-  const [userRole, setUserRole] = useState(sessionStorage.getItem('userRole'));
+  
+  // 🔥 FIX: Role lowercase taaki UI humesha sahi dikhe
+  const [userRole, setUserRole] = useState((sessionStorage.getItem('userRole') || '').toLowerCase()); 
   
   const [walletBalance, setWalletBalance] = useState(parseFloat(sessionStorage.getItem('walletBalance')) || 0.0);
 
   const [restaurants, setRestaurants] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  
+  const [filterVeg, setFilterVeg] = useState(false);
+  const [sortBy, setSortBy] = useState('none'); 
+
   const [cart, setCart] = useState([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isOrdered, setIsOrdered] = useState(false);
@@ -20,6 +41,10 @@ function App() {
   const [view, setView] = useState('home'); 
   
   const [address, setAddress] = useState(sessionStorage.getItem('userAddress') || 'Select your address');
+  
+  // 🔥 NAYA: Saved Addresses store karne ke liye
+  const [savedAddresses, setSavedAddresses] = useState([]); 
+
   const [paymentMethod, setPaymentMethod] = useState('Wallet'); 
 
   const [orders, setOrders] = useState([]); 
@@ -32,15 +57,18 @@ function App() {
   const [newResName, setNewResName] = useState('');
   const [newItem, setNewItem] = useState({ name: '', price: '', is_veg: true });
 
-  const [formData, setFormData] = useState({ name: '', email: '', password: '', role: 'customer', phone_number: '', vehicle_number: '' });
+  const [formData, setFormData] = useState({ name: '', email: '', password: '', role: 'Customer', phone_number: '', vehicle_number: '' });
   const [showRegister, setShowRegister] = useState(false);
   const [merchantResId, setMerchantResId] = useState(sessionStorage.getItem('merchantResId') || ''); 
   const ws = useRef(null); 
 
   const refreshData = async () => {
-    const currentRole = sessionStorage.getItem('userRole');
+    const currentRole = (sessionStorage.getItem('userRole') || '').toLowerCase();
     const currentId = sessionStorage.getItem('userId');
-    if (!currentRole || !currentId) return;
+    const token = sessionStorage.getItem('token');
+    
+    // 🔥 FIX: Token load hone se pehle API call rukegi
+    if (!currentRole || !currentId || !token) return;
 
     let resMap = {};
     try {
@@ -56,6 +84,14 @@ function App() {
     } catch (e) {}
 
     if (currentRole === 'customer') {
+        // 🔥 NAYA: Customer ke saved addresses fetch karo
+        try {
+            const addrRes = await axios.get(`http://localhost:8001/users/${currentId}/addresses`);
+            if(addrRes.data && Array.isArray(addrRes.data)) {
+                setSavedAddresses(addrRes.data);
+            }
+        } catch(e) {}
+
         axios.get(`http://localhost:8003/orders/user/${currentId}`).then(async (res) => {
             const ordersWithNames = res.data.map(o => ({...o, restaurant_name: resMap[o.restaurant_id] || "Restaurant"}));
             setOrders(ordersWithNames);
@@ -75,9 +111,15 @@ function App() {
     } else if (currentRole === 'merchant') {
         axios.get(`http://localhost:8002/restaurants/merchant/${currentId}`).then(res => {
             setMyRestaurants(res.data);
-            if(res.data.length > 0 && !merchantResId) {
+            const currentResId = sessionStorage.getItem('merchantResId');
+            const isValid = res.data.some(r => r.id.toString() === currentResId?.toString());
+            
+            if (res.data.length > 0 && (!currentResId || !isValid)) {
                 setMerchantResId(res.data[0].id);
                 sessionStorage.setItem('merchantResId', res.data[0].id);
+            } else if (res.data.length === 0) {
+                setMerchantResId('');
+                sessionStorage.removeItem('merchantResId');
             }
         }).catch(e=>console.log(e));
         
@@ -91,10 +133,16 @@ function App() {
   };
 
   useEffect(() => {
-    if (!isLoggedIn || !userRole) return;
+    const token = sessionStorage.getItem('token');
+    // 🔥 FIX: Role, Login, aur Token load hone ka intezar
+    if (!isLoggedIn || !userRole || !token) return;
     
     let channel = userRole === 'customer' ? `customer_${userId}` : userRole === 'merchant' ? `merchant_${merchantResId}` : 'riders';
-    refreshData();
+    
+    // Thoda sa delay taaki session variables fully settle ho jayein
+    setTimeout(() => {
+        refreshData();
+    }, 100);
     
     const connectWS = () => {
         if (!merchantResId && userRole === 'merchant') return; 
@@ -115,10 +163,17 @@ function App() {
   }, [isLoggedIn, userRole, merchantResId, userId]);
 
   const filteredRestaurants = restaurants.map(res => {
-    const matchRes = res.name.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchItems = res.items?.filter(item => item.name.toLowerCase().includes(searchTerm.toLowerCase()));
-    if (matchRes) return res;
-    if (matchItems && matchItems.length > 0) return { ...res, items: matchItems };
+    let matchItems = res.items || [];
+    if (searchTerm) matchItems = matchItems.filter(item => item.name.toLowerCase().includes(searchTerm.toLowerCase()));
+    if (filterVeg) matchItems = matchItems.filter(item => item.is_veg === true);
+    
+    if (sortBy === 'lowToHigh') matchItems.sort((a, b) => a.price - b.price);
+    else if (sortBy === 'highToLow') matchItems.sort((a, b) => b.price - a.price);
+
+    const matchResName = res.name.toLowerCase().includes(searchTerm.toLowerCase());
+    
+    if (matchItems.length > 0) return { ...res, items: matchItems };
+    if (matchResName && !filterVeg) return res; 
     return null;
   }).filter(res => res !== null);
 
@@ -146,8 +201,6 @@ function App() {
   const handleCheckout = async () => {
     if (!address.trim() || address === 'Select your address') { alert("Please enter your delivery address!"); return; }
     const total = cart.reduce((s, i) => s + i.price, 0) + 40;
-    
-    // 🔥 NEW: Extract Items Summary for Receipt
     const itemsSummaryString = cart.map(i => i.name).join(', ');
 
     setIsPaying(true); 
@@ -158,16 +211,17 @@ function App() {
              await axios.post(`http://localhost:8001/users/${userId}/wallet/deduct`, { amount: total });
         }
         await axios.post('http://localhost:8003/orders', { 
-            user_id: userId, 
-            restaurant_id: cart[0].restaurantId, 
+            user_id: parseInt(userId), 
+            restaurant_id: parseInt(cart[0].restaurantId), 
             total_amount: total, 
             address: address,
-            items_summary: itemsSummaryString // Sent to backend
+            items_summary: itemsSummaryString 
         });
         setIsPaying(false); setIsOrdered(true); setCart([]); setIsCartOpen(false); refreshData();
       } catch (err) { 
         setIsPaying(false); 
-        alert(err.response?.data?.detail || "Transaction Failed! Check server connections.");
+        const errorMsg = err.response?.data?.detail ? JSON.stringify(err.response.data.detail) : "Transaction Failed! Check server.";
+        alert("Checkout Error: " + errorMsg);
       }
       setTimeout(() => setIsOrdered(false), 5000);
     }, 2000);
@@ -184,27 +238,96 @@ function App() {
   const createRestaurant = async () => {
     if(!newResName.trim()) return;
     try {
-        await axios.post('http://localhost:8002/restaurants', { owner_id: userId, name: newResName });
+        await axios.post('http://localhost:8002/restaurants', { 
+            merchant_id: parseInt(userId), 
+            name: newResName, 
+            address: "Pune, Maharashtra" 
+        });
         setNewResName('');
         refreshData();
-        alert("Restaurant Created!");
-    } catch (e) { alert("Failed to create restaurant"); }
+        alert("Restaurant Created Successfully! 🎉");
+    } catch (e) { 
+        const errorMsg = e.response?.data?.detail ? JSON.stringify(e.response.data.detail) : "Server issue (Port 8002)";
+        alert("Create Restaurant Failed: " + errorMsg); 
+    }
   };
 
   const addMenuItem = async () => {
-    if(!newItem.name || !newItem.price || !merchantResId) return;
+    if(!newItem.name || !newItem.price) {
+        alert("Bhai, dish ka naam aur price toh daalo! 😅");
+        return;
+    }
+    if(!merchantResId) {
+        alert("Pehle left side se apni restaurant select karo!");
+        return;
+    }
     try {
-        await axios.post(`http://localhost:8002/restaurants/${merchantResId}/items`, { name: newItem.name, price: parseFloat(newItem.price), is_veg: newItem.is_veg });
+        await axios.post(`http://localhost:8002/restaurants/${merchantResId}/menu`, { 
+            name: newItem.name, 
+            price: parseFloat(newItem.price), 
+            description: newItem.is_veg ? "Veg" : "Non-Veg", 
+            is_available: true 
+        });
         setNewItem({ name: '', price: '', is_veg: true });
         refreshData();
-        alert("Dish added to Menu!");
-    } catch (e) { alert("Failed to add dish"); }
+        alert("Dish added successfully! 🥘");
+    } catch (e) { 
+        const errorMsg = e.response?.data?.detail ? JSON.stringify(e.response.data.detail) : "Server issue";
+        alert("Add Item Failed: " + errorMsg); 
+    }
+  };
+
+  const deleteMenuItem = async (itemId) => {
+    if(!window.confirm("Are you sure you want to delete this dish?")) return;
+    try {
+        await axios.delete(`http://localhost:8002/restaurants/items/${itemId}`);
+        refreshData();
+        alert("Dish deleted successfully! 🗑️");
+    } catch(e) { 
+        alert("Failed to delete item: " + (e.response?.data?.detail || "")); 
+    }
+  };
+
+  const updateMenuItem = async (item) => {
+    const newName = prompt("Edit Dish Name:", item.name);
+    if(!newName) return;
+    const newPrice = prompt("Edit Price (₹):", item.price);
+    if(!newPrice) return;
+    const isVegConfirm = window.confirm("Press OK for Veg 🟢, Cancel for Non-Veg 🔴");
+
+    try {
+        await axios.put(`http://localhost:8002/restaurants/items/${item.id}`, {
+            name: newName, 
+            price: parseFloat(newPrice), 
+            is_veg: isVegConfirm
+        });
+        refreshData();
+        alert("Dish updated successfully! ✏️");
+    } catch(e) { 
+        alert("Failed to update item: " + (e.response?.data?.detail || "")); 
+    }
   };
 
   const handleLogout = () => { sessionStorage.clear(); window.location.href = '/'; };
 
   const updateStatus = async (id, status) => {
-    try { await axios.patch(`http://localhost:8003/orders/${id}/status?status=${status}`); refreshData(); } 
+    try {
+        // 1. Order status ko update karo
+        await axios.patch(`http://localhost:8003/orders/${id}/status?status=${status}`);
+        
+        // 2. Agar order deliver ho gaya, toh Rider ke account mein paise daalo!
+        if (status === 'Delivered' && userRole === 'rider') {
+            try {
+                await axios.post(`http://localhost:8001/users/${userId}/wallet/topup`, { amount: 40 });
+                alert("Awesome! ₹40 credited to your Wallet for this delivery! 💰🛵");
+            } catch (walletErr) {
+                console.error("Wallet update failed:", walletErr);
+            }
+        }
+
+        // 3. UI aur Data ko wapas refresh karo
+        refreshData();
+    } 
     catch (err) { console.error(err); }
   };
 
@@ -215,7 +338,6 @@ function App() {
         alert("Order successfully assigned to you! 🛵");
     } 
     catch (err) { 
-        // 🔥 Race Condition Handling on UI
         alert(err.response?.data?.detail || "Claim Failed! Someone else might have grabbed it."); 
         refreshData();
     }
@@ -232,18 +354,59 @@ function App() {
 
   if (!isLoggedIn) return (
     <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', background: 'linear-gradient(135deg, #be123c 0%, #881337 100%)', fontFamily: 'sans-serif' }}>
-      <form onSubmit={(e) => { e.preventDefault(); axios.post(`http://localhost:8001/${showRegister?'register':'login'}`, formData).then(res => { if(!showRegister) { sessionStorage.setItem('isLoggedIn', 'true'); sessionStorage.setItem('userName', res.data.user_name); sessionStorage.setItem('userId', res.data.user_id); sessionStorage.setItem('userRole', res.data.role); sessionStorage.setItem('walletBalance', res.data.wallet_balance || 0); window.location.reload(); } else { alert("Registered! Login to continue."); setShowRegister(false); } }).catch((err) => alert(err.response?.data?.detail || "Auth Failed!")); }} style={{ background: 'white', padding: '40px', borderRadius: '25px', width: '380px', boxShadow: '0 20px 40px rgba(0,0,0,0.3)' }}>
+      <form onSubmit={(e) => { 
+          e.preventDefault(); 
+          axios.post(`http://localhost:8001/${showRegister?'register':'login'}`, formData)
+          .then(res => { 
+              if(!showRegister) { 
+                  sessionStorage.setItem('isLoggedIn', 'true'); 
+                  sessionStorage.setItem('userName', res.data.user_name); 
+                  sessionStorage.setItem('userId', res.data.user_id); 
+                  sessionStorage.setItem('userRole', (res.data.role || '').toLowerCase()); 
+                  sessionStorage.setItem('walletBalance', res.data.wallet_balance || 0); 
+                  
+                  // 🔥 JWT FIX: Token ko browser ki memory mein save kar liya!
+                  sessionStorage.setItem('token', res.data.token); 
+                  
+                  window.location.reload(); 
+              } else { 
+                  alert("Registered! Login to continue."); 
+                  setShowRegister(false); 
+              } 
+          })
+          .catch((err) => {
+              let errorMsg = "Auth Failed!";
+              if(err.response && err.response.data && err.response.data.detail) {
+                  const detail = err.response.data.detail;
+                  if (Array.isArray(detail)) {
+                      errorMsg = detail[0].msg;
+                  } else {
+                      errorMsg = detail;
+                  }
+              }
+              alert(errorMsg); 
+          }); 
+      }} style={{ background: 'white', padding: '40px', borderRadius: '25px', width: '380px', boxShadow: '0 20px 40px rgba(0,0,0,0.3)' }}>
         <h1 style={{ textAlign: 'center', color: '#be123c', margin: '0 0 30px 0' }}>PuneFood🥘</h1>
+        
         {showRegister && <>
             <input type="text" placeholder="Full Name" required onChange={e => setFormData({...formData, name: e.target.value})} style={{ width: '100%', margin: '10px 0', padding: '14px', borderRadius: '10px', border: '1px solid #ddd', boxSizing:'border-box' }} />
-            <select onChange={e => setFormData({...formData, role: e.target.value})} style={{ width: '100%', margin: '10px 0', padding: '14px', borderRadius: '10px', border: '1px solid #ddd', boxSizing:'border-box', background:'#f8fafc' }}><option value="customer">Customer 🧑 (Gets ₹500 Bonus)</option><option value="merchant">Merchant 👨‍🍳</option><option value="rider">Rider 🛵</option></select>
-            {formData.role === 'rider' && <>
-                <input type="text" placeholder="Phone Number (e.g. 9876543210)" required onChange={e => setFormData({...formData, phone_number: e.target.value})} style={{ width: '100%', margin: '10px 0', padding: '14px', borderRadius: '10px', border: '1px solid #3b82f6', boxSizing:'border-box', background:'#eff6ff' }} />
+            
+            <select value={formData.role} onChange={e => setFormData({...formData, role: e.target.value})} style={{ width: '100%', margin: '10px 0', padding: '14px', borderRadius: '10px', border: '1px solid #ddd', boxSizing:'border-box', background:'#f8fafc' }}>
+                <option value="Customer">Customer 🧑 (Gets ₹500 Bonus)</option>
+                <option value="Merchant">Merchant 👨‍🍳</option>
+                <option value="Rider">Rider 🛵</option>
+            </select>
+            
+            <input type="text" placeholder="Phone Number (e.g. 9876543210)" required onChange={e => setFormData({...formData, phone_number: e.target.value})} style={{ width: '100%', margin: '10px 0', padding: '14px', borderRadius: '10px', border: '1px solid #3b82f6', boxSizing:'border-box', background:'#eff6ff' }} />
+
+            {formData.role === 'Rider' && <>
                 <input type="text" placeholder="Bike No (e.g. MH-12-AB-1234)" required onChange={e => setFormData({...formData, vehicle_number: e.target.value})} style={{ width: '100%', margin: '10px 0', padding: '14px', borderRadius: '10px', border: '1px solid #3b82f6', boxSizing:'border-box', background:'#eff6ff' }} />
             </>}
         </>}
         <input type="email" placeholder="Email" required onChange={e => setFormData({...formData, email: e.target.value})} style={{ width: '100%', margin: '10px 0', padding: '14px', borderRadius: '10px', border: '1px solid #ddd', boxSizing:'border-box' }} />
         <input type="password" placeholder="Password" required onChange={e => setFormData({...formData, password: e.target.value})} style={{ width: '100%', margin: '10px 0', padding: '14px', borderRadius: '10px', border: '1px solid #ddd', boxSizing:'border-box' }} />
+        
         <button type="submit" style={{ width: '100%', padding: '15px', background: '#be123c', color: 'white', border: 'none', borderRadius: '10px', fontWeight: 'bold', marginTop: '15px', cursor:'pointer' }}>{showRegister ? 'Join Now' : 'Sign In'}</button>
         <p onClick={() => setShowRegister(!showRegister)} style={{ textAlign: 'center', cursor: 'pointer', color: '#3b82f6', marginTop: '20px', fontSize: '14px' }}>{showRegister ? 'Back to Login' : 'Create an Account'}</p>
       </form>
@@ -323,6 +486,7 @@ function App() {
                     <input type="text" placeholder="Restaurant Name" value={newResName} onChange={e => setNewResName(e.target.value)} style={{width:'100%', padding:'12px', borderRadius:'10px', border:'1px solid #ddd', marginBottom:'10px', boxSizing:'border-box'}}/>
                     <button onClick={createRestaurant} style={{width:'100%', padding:'12px', background:'#be123c', color:'white', border:'none', borderRadius:'10px', fontWeight:'bold', cursor:'pointer'}}>Create</button>
                 </div>
+                
                 {myRestaurants.length > 0 && (
                     <div style={{ background: 'white', padding: '25px', borderRadius: '25px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)' }}>
                         <h3 style={{marginTop:0, color:'#10b981'}}>🥘 Add Menu Item</h3>
@@ -335,6 +499,29 @@ function App() {
                         <button onClick={addMenuItem} style={{width:'100%', padding:'12px', background:'#10b981', color:'white', border:'none', borderRadius:'10px', fontWeight:'bold', cursor:'pointer'}}><PlusCircle size={18} style={{verticalAlign:'middle', marginRight:'5px'}}/> Add Dish</button>
                     </div>
                 )}
+
+                {myRestaurants.length > 0 && merchantResId && (
+                    <div style={{ background: 'white', padding: '25px', borderRadius: '25px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)', marginTop: '20px' }}>
+                        <h3 style={{marginTop:0, color:'#374151'}}>📋 Manage Menu</h3>
+                        {myRestaurants.find(r => r.id.toString() === merchantResId?.toString())?.items?.length > 0 ? (
+                            myRestaurants.find(r => r.id.toString() === merchantResId.toString()).items.map(item => (
+                                <div key={item.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'15px', borderBottom:'1px solid #f3f4f6'}}>
+                                    <div>
+                                        <b style={{fontSize:'15px', color:'#1f2937'}}>{item.is_veg ? '🟢' : '🔴'} {item.name}</b>
+                                        <br/>
+                                        <span style={{fontSize:'14px', color:'#6b7280', fontWeight:'bold'}}>₹{item.price}</span>
+                                    </div>
+                                    <div style={{display:'flex', gap:'10px'}}>
+                                        <button onClick={() => updateMenuItem(item)} style={{padding:'6px 12px', background:'#f8fafc', border:'1px solid #cbd5e1', borderRadius:'8px', cursor:'pointer'}}>✏️</button>
+                                        <button onClick={() => deleteMenuItem(item.id)} style={{padding:'6px 12px', background:'#fef2f2', border:'1px solid #fca5a5', color:'#ef4444', borderRadius:'8px', cursor:'pointer'}}>🗑️</button>
+                                    </div>
+                                </div>
+                            ))
+                        ) : (
+                            <p style={{color:'#9ca3af', fontSize:'14px'}}>No items added yet. Add some above!</p>
+                        )}
+                    </div>
+                )}
             </div>
           </div>
         ) : userRole === 'rider' ? (
@@ -344,7 +531,7 @@ function App() {
             <div style={{ display: 'flex', gap: '20px', marginBottom: '30px' }}>
                 <div style={{ flex: 1, background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)', padding: '30px', borderRadius: '25px', color: 'white', boxShadow: '0 10px 20px rgba(16, 185, 129, 0.3)' }}>
                     <h3 style={{margin:0, opacity:0.9}}>Lifetime Earnings 💰</h3>
-                    <h1 style={{fontSize:'45px', margin:'10px 0'}}>₹{myRiderOrders.filter(o=>o.status==='Delivered').length * 40}</h1>
+                    <h1 style={{fontSize:'45px', margin:'10px 0'}}>₹{walletBalance.toFixed(2)}</h1>
                     <p style={{margin:0, fontWeight:'bold'}}>{myRiderOrders.filter(o=>o.status==='Delivered').length} Deliveries Completed</p>
                 </div>
                 <div style={{ flex: 1, background: 'white', padding: '30px', borderRadius: '25px', border: '1px solid #e2e8f0' }}>
@@ -356,7 +543,6 @@ function App() {
 
             <div style={{ display:'flex', gap:'30px', alignItems:'flex-start' }}>
                 <div style={{ flex: 1, display:'flex', flexDirection:'column', gap:'30px' }}>
-                    {/* Available Orders */}
                     <div style={{ background: 'white', padding: '30px', borderRadius: '25px', border:'2px solid #bfdbfe', boxShadow: '0 4px 10px rgba(0,0,0,0.05)' }}>
                         <h3 style={{marginTop:0, color:'#1e40af', display:'flex', alignItems:'center', gap:'10px'}}><Bell size={20}/> New Requests</h3>
                         {availableOrders.length === 0 ? <p style={{color:'#6b7280'}}>No new orders in your area.</p> : availableOrders.map(o => (
@@ -370,7 +556,6 @@ function App() {
                             </div>
                         ))}
                     </div>
-                    {/* Active Jobs */}
                     <div style={{ background: 'white', padding: '30px', borderRadius: '25px', border:'2px solid #f59e0b', boxShadow: '0 4px 10px rgba(0,0,0,0.05)' }}>
                         <h3 style={{marginTop:0, color:'#b45309', display:'flex', alignItems:'center', gap:'10px'}}><Bike size={20}/> My Active Jobs</h3>
                         {myRiderOrders.filter(o=>o.status!=='Delivered').length === 0 ? <p style={{color:'#6b7280'}}>You don't have any active deliveries.</p> : myRiderOrders.filter(o=>o.status!=='Delivered').map(o => (
@@ -378,15 +563,13 @@ function App() {
                                 <div>
                                     <b style={{fontSize:'16px'}}>Order #{o.id}</b><br/>
                                     <span style={{fontSize:'13px', color:'#b45309', fontWeight:'bold'}}>Status: {o.status}</span><br/>
-                                    <span style={{fontSize:'12px', color:'#4b5563'}}>To: {o.address.substring(0,25)}...</span>
+                                    <span style={{fontSize:'12px', color:'#4b5563'}}>To: {o.address?.substring(0,25)}...</span>
                                 </div>
                                 <button onClick={() => updateStatus(o.id, 'Delivered')} style={{background:'#10b981', color:'white', border:'none', padding:'12px 25px', borderRadius:'10px', fontWeight:'bold', cursor:'pointer', boxShadow:'0 4px 10px rgba(16,185,129,0.3)'}}>Mark Delivered ✓</button>
                             </div>
                         ))}
                     </div>
                 </div>
-
-                {/* Earning History */}
                 <div style={{ flex: 1, background: 'white', padding: '30px', borderRadius: '25px', border:'1px solid #e2e8f0', boxShadow: '0 4px 10px rgba(0,0,0,0.05)' }}>
                     <h3 style={{marginTop:0, color:'#374151', display:'flex', alignItems:'center', gap:'10px'}}><IndianRupee size={20}/> Earnings History</h3>
                     <div style={{maxHeight:'500px', overflowY:'auto'}}>
@@ -409,7 +592,6 @@ function App() {
             
             /* --- 🧑 CUSTOMER HOME & TRACKING --- */
             <div>
-                {/* 🔥 MULTI-ORDER DYNAMIC TRACKER */}
                 {activeOrders.length > 0 && (
                     <div style={{ marginBottom: '50px', display: 'flex', flexDirection: 'column', gap: '25px' }}>
                         {activeOrders.map(activeOrder => {
@@ -426,7 +608,6 @@ function App() {
                                     
                                     <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:'30px', position:'relative'}}>
                                         <div style={{position:'absolute', top:'20px', left:'10%', right:'10%', height:'4px', background:'#e5e7eb', zIndex:1}}></div>
-                                        
                                         <div style={{textAlign:'center', zIndex:2, background:'white', padding:'0 10px'}}>
                                             <div style={{width:'45px', height:'45px', borderRadius:'50%', background: activeOrder.status === 'Pending' ? '#be123c' : '#10b981', color:'white', display:'flex', justifyContent:'center', alignItems:'center', margin:'0 auto'}}><CheckCircle size={24}/></div>
                                             <p style={{fontWeight:'bold', marginTop:'10px', color:'#374151'}}>Placed</p>
@@ -441,11 +622,10 @@ function App() {
                                         </div>
                                     </div>
 
-                                    {/* 🔥 REAL RIDER & OTP REVEAL */}
                                     {activeOrder.status === 'Picked Up' && rider ? (
                                         <div style={{marginTop:'30px', background:'#f0f9ff', padding:'20px', borderRadius:'15px', border:'1px solid #bfdbfe', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
                                             <div style={{display:'flex', alignItems:'center', gap:'15px'}}>
-                                                <div style={{width:'50px', height:'50px', background:'#2563eb', borderRadius:'50%', color:'white', display:'flex', justifyContent:'center', alignItems:'center', fontWeight:'bold', fontSize:'20px'}}>{rider.name.charAt(0)}</div>
+                                                <div style={{width:'50px', height:'50px', background:'#2563eb', borderRadius:'50%', color:'white', display:'flex', justifyContent:'center', alignItems:'center', fontWeight:'bold', fontSize:'20px'}}>{rider.name?.charAt(0) || 'R'}</div>
                                                 <div>
                                                     <p style={{margin:0, fontWeight:'bold', fontSize:'18px', color:'#1e3a8a'}}>{rider.name} <span style={{fontSize:'12px', background:'#10b981', color:'white', padding:'2px 6px', borderRadius:'10px'}}>4.9 ⭐</span></p>
                                                     <p style={{margin:0, color:'#3b82f6', fontSize:'14px', marginTop:'4px'}}>Bike: <b>{rider.vehicle_number}</b></p>
@@ -469,16 +649,34 @@ function App() {
                     </div>
                 )}
 
-                <div style={{ maxWidth: '600px', margin: '0 auto 40px auto', position:'relative' }}>
-                    <Search size={22} color="#9ca3af" style={{position:'absolute', left:'18px', top:'18px'}}/>
-                    <input type="text" placeholder="Search for Misal, Biryani..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} style={{ width: '100%', padding: '18px 18px 18px 55px', borderRadius: '35px', border: '1px solid #e2e8f0', fontSize: '17px', outline:'none' }} />
+                <div style={{ maxWidth: '700px', margin: '0 auto 40px auto' }}>
+                    <div style={{ position:'relative', marginBottom: '20px' }}>
+                        <Search size={22} color="#9ca3af" style={{position:'absolute', left:'18px', top:'18px'}}/>
+                        <input type="text" placeholder="Search for Misal, Biryani..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} style={{ width: '100%', padding: '18px 18px 18px 55px', borderRadius: '35px', border: '1px solid #e2e8f0', fontSize: '17px', outline:'none', boxShadow: '0 4px 6px rgba(0,0,0,0.05)' }} />
+                    </div>
+                    
+                    <div style={{ display: 'flex', gap: '15px', justifyContent: 'center' }}>
+                        <button onClick={() => setFilterVeg(!filterVeg)} style={{ padding: '10px 20px', borderRadius: '25px', border: filterVeg ? '2px solid #10b981' : '1px solid #e2e8f0', background: filterVeg ? '#ecfdf5' : 'white', color: filterVeg ? '#065f46' : '#4b5563', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', transition: 'all 0.2s' }}>
+                            <div style={{ width: '12px', height: '12px', border: '1px solid #10b981', display: 'flex', justifyContent: 'center', alignItems: 'center', background: 'white' }}>
+                                <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }}></div>
+                            </div>
+                            Pure Veg
+                        </button>
+                        
+                        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ padding: '10px 20px', borderRadius: '25px', border: '1px solid #e2e8f0', background: 'white', color: '#4b5563', fontWeight: 'bold', cursor: 'pointer', outline: 'none' }}>
+                            <option value="none">Sort by: Recommended</option>
+                            <option value="lowToHigh">Price: Low to High</option>
+                            <option value="highToLow">Price: High to Low</option>
+                        </select>
+                    </div>
                 </div>
+
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(330px, 1fr))', gap: '35px' }}>
                     {filteredRestaurants.map(res => (
                         <div key={res.id} style={{ background: 'white', borderRadius: '25px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)', overflow:'hidden', border:'1px solid #f1f5f9' }}>
                             <div style={{background:'#be123c', padding:'20px', color:'white', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
                                 <h3 style={{margin:0}}>{res.name}</h3>
-                                <span style={{background:'rgba(255,255,255,0.2)', padding:'4px 10px', borderRadius:'12px', fontSize:'13px', fontWeight:'bold'}}>{res.rating} ⭐</span>
+                                <span style={{background:'rgba(255,255,255,0.2)', padding:'4px 10px', borderRadius:'12px', fontSize:'13px', fontWeight:'bold'}}>{res.rating || '4.5'} ⭐</span>
                             </div>
                             <div style={{ padding: '25px' }}>
                                 {res.items?.length === 0 ? <p style={{color:'#9ca3af', textAlign:'center'}}>Menu coming soon...</p> : res.items?.map(i => (
@@ -520,9 +718,8 @@ function App() {
                         </div>
                         
                         <div style={{background:'#f9fafb', padding:'15px', borderRadius:'12px', marginBottom:'15px'}}>
-                            {/* 🔥 REAL PROOF OF ITEMS */}
                             <p style={{margin:'0 0 8px 0', color:'#111827', fontSize:'15px'}}><b>Items:</b> {o.items_summary || 'Standard Meal'}</p>
-                            <p style={{margin:'0 0 8px 0', color:'#4b5563', fontSize:'14px'}}><b>Delivered To:</b> {o.address.substring(0, 40)}...</p>
+                            <p style={{margin:'0 0 8px 0', color:'#4b5563', fontSize:'14px'}}><b>Delivered To:</b> {o.address?.substring(0, 40)}...</p>
                             <p style={{margin:0, color:'#4b5563', fontSize:'14px'}}><b>Paid via:</b> PuneFood Wallet</p>
                         </div>
                         
@@ -548,11 +745,30 @@ function App() {
                 <div style={{flex: 1, overflowY: 'auto'}}>
                     <div style={{background:'#fff1f2', padding:'15px', borderRadius:'12px', marginBottom:'25px'}}><p style={{color:'#be123c', fontWeight:'bold', margin:0}}>From: {cart[0].restaurantName}</p></div>
                     
+                    {/* 🔥 NAYA: Saved Address Dropdown (Sirf agar saved address hain toh dikhega) */}
                     <div style={{ marginBottom: '30px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                             <h4 style={{ margin: 0, color:'#374151' }}>Delivery Address</h4>
                             <button onClick={detectLocation} style={{ background: 'none', border: 'none', color: '#be123c', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', textDecoration: 'underline' }}>Auto-Detect</button>
                         </div>
+                        
+                        {savedAddresses.length > 0 && (
+                            <select 
+                                onChange={(e) => {
+                                    if(e.target.value !== "new") {
+                                        setAddress(e.target.value);
+                                        sessionStorage.setItem('userAddress', e.target.value);
+                                    }
+                                }}
+                                style={{ width: '100%', padding: '12px', borderRadius: '12px', border: '1px solid #ddd', marginBottom: '10px', backgroundColor: '#f8fafc', outline: 'none' }}
+                            >
+                                <option value="new">-- Select a Saved Address --</option>
+                                {savedAddresses.map((addr, idx) => (
+                                    <option key={idx} value={addr}>{addr.substring(0, 30)}...</option>
+                                ))}
+                            </select>
+                        )}
+
                         <textarea value={address === 'Select your address' ? '' : address} onChange={(e) => { setAddress(e.target.value); sessionStorage.setItem('userAddress', e.target.value); }} placeholder="House No, Street Name, Pune..." style={{ width: '100%', padding: '12px', borderRadius: '12px', border: '1px solid #ddd', minHeight: '80px', boxSizing: 'border-box', outline: 'none' }} />
                     </div>
 
@@ -582,7 +798,7 @@ function App() {
                     </div>
                     <button onClick={handleCheckout} style={{ width: '100%', padding: '20px', background: '#be123c', color: 'white', border: 'none', borderRadius: '15px', marginTop: '25px', cursor: 'pointer', fontWeight: 'bold', fontSize:'19px', boxShadow:'0 10px 15px rgba(190, 18, 60, 0.3)' }}>Pay & Confirm 🚀</button>
                 </div>
-            ) : <div style={{textAlign:'center', marginTop:'100px'}}><ShoppingCart size={80} style={{opacity:0.1, margin:'0 auto'}}/><h3 style={{color:'#9ca3af'}}>Your cart is empty!</h3></div>}
+            ) : <div style={{textAlign:'center', marginTop:'100px'}}><ShoppingCart size={80} style={{opacity:0.1, margin:'0 auto'}}/><h3>Cart empty!</h3></div>}
         </div>
       )}
 
