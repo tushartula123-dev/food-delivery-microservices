@@ -27,7 +27,7 @@ SECRET_KEY = "pune_food_super_secret"
 ALGORITHM = "HS256"
 
 # --- 🐘 DATABASE SETUP ---
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:1234@localhost:5433/restaurant_db"
+SQLALCHEMY_DATABASE_URL = "postgresql://postgres:1234@localhost:5432/restaurant_db"
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -93,7 +93,10 @@ class MenuItemUpdate(BaseModel):
 
 @app.get("/restaurants")
 def get_all_restaurants(db: Session = Depends(get_db)):
-    # 🟢 Ye API kabhi Port 8001 ko call nahi karegi (Pure Independence)
+    if redis_client:
+        cached = redis_client.get("all_restaurants_cache")
+        if cached: return json.loads(cached)
+
     restaurants = db.query(Restaurant).all()
     result = []
     for r in restaurants:
@@ -102,11 +105,12 @@ def get_all_restaurants(db: Session = Depends(get_db)):
             "id": r.id, "merchant_id": r.merchant_id, "name": r.name, "address": r.address,
             "items": [{"id": i.id, "name": i.name, "price": i.price, "is_veg": i.description == "Veg"} for i in items]
         })
+    
+    if redis_client: redis_client.setex("all_restaurants_cache", 60, json.dumps(result))
     return result
 
 @app.get("/restaurants/merchant/{merchant_id}")
 def get_merchant_restaurants(merchant_id: int, db: Session = Depends(get_db)):
-    # 🟢 Merchant apna data hamesha dekh payega, bhale hi User Service down ho.
     restaurants = db.query(Restaurant).filter(Restaurant.merchant_id == merchant_id).all()
     result = []
     for r in restaurants:
@@ -118,24 +122,27 @@ def get_merchant_restaurants(merchant_id: int, db: Session = Depends(get_db)):
     return result
 
 @app.post("/restaurants")
-def create_restaurant(rest: RestaurantCreate, db: Session = Depends(get_db), token: HTTPAuthorizationCredentials = Depends(security)):
+def create_restaurant(rest: RestaurantCreate, db: Session = Depends(get_db), payload: dict = Depends(verify_token)):
+    # 🔥 FIX: Identity Theft Protection (Check if merchant_id matches Token)
+    if int(payload.get("sub")) != rest.merchant_id:
+        raise HTTPException(status_code=403, detail="Merchant verification failed. ID mismatch.")
+
     if not rest.name or rest.name.strip() in ["", "string"]:
         raise HTTPException(status_code=400, detail="Name required!")
     
-    # 🛡️ SMART FALLBACK CHECK
     cache_key = f"verified_merchant_{rest.merchant_id}"
     is_verified = False
 
     if redis_client and redis_client.get(cache_key) == "true":
         is_verified = True
-        print("🚀 Verified via Redis (Independent Mode)")
 
     if not is_verified:
         try:
-            # Sirf tabhi call karenge jab Redis khali ho
+            # Note: We use original token for internal service call
             user_service_url = f"http://localhost:8001/users/{rest.merchant_id}"
-            headers = {"Authorization": f"Bearer {token.credentials}"}
-            response = requests.get(user_service_url, headers=headers, timeout=2) # 2 sec timeout
+            # Re-encoding or passing header (using hardcoded secret/algorithm for simplicity here)
+            headers = {"Authorization": f"Bearer {jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)}"}
+            response = requests.get(user_service_url, headers=headers, timeout=2)
             
             if response.status_code == 200:
                 user_data = response.json()
@@ -147,32 +154,44 @@ def create_restaurant(rest: RestaurantCreate, db: Session = Depends(get_db), tok
             else:
                 raise HTTPException(status_code=400, detail="Merchant verification failed.")
         except requests.exceptions.RequestException:
-            # 🚨 Agar User Service down hai aur Redis mein bhi nahi hai
             raise HTTPException(status_code=503, detail="User Service is down & No cache found. Try later.")
 
     new_rest = Restaurant(merchant_id=rest.merchant_id, name=rest.name, address=rest.address)
     db.add(new_rest)
     db.commit()
     db.refresh(new_rest)
+    if redis_client: redis_client.delete("all_restaurants_cache")
     return new_rest
 
-# --- 🍔 MENU APIS (Smart & Secure) ---
+# --- 🍔 MENU APIS ---
 
 @app.post("/restaurants/{restaurant_id}/menu")
 def add_menu_item(restaurant_id: int, item: MenuItemCreate, db: Session = Depends(get_db), payload: dict = Depends(verify_token)):
     res = db.query(Restaurant).filter(Restaurant.id == restaurant_id).first()
     if not res: raise HTTPException(status_code=404, detail="Restaurant not found")
+    
+    # 🔥 FIX: Price Validation
+    if item.price <= 0:
+        raise HTTPException(status_code=400, detail="Price must be greater than zero!")
+
     if int(payload.get("sub")) != res.merchant_id:
         raise HTTPException(status_code=403, detail="Not your restaurant!")
 
     new_item = MenuItem(restaurant_id=restaurant_id, name=item.name.strip(), price=item.price, description=item.description)
     db.add(new_item)
     db.commit()
-    if redis_client: redis_client.delete(f"menu_{restaurant_id}")
+    if redis_client: 
+        redis_client.delete(f"menu_{restaurant_id}")
+        redis_client.delete("all_restaurants_cache") 
     return new_item
 
 @app.get("/restaurants/{restaurant_id}/menu")
 def get_menu(restaurant_id: int, db: Session = Depends(get_db)):
+    # 🔥 FIX: 404 Error if restaurant does not exist
+    res_exists = db.query(Restaurant).filter(Restaurant.id == restaurant_id).first()
+    if not res_exists:
+        raise HTTPException(status_code=404, detail="Restaurant not found")
+
     cache_key = f"menu_{restaurant_id}"
     if redis_client:
         cached = redis_client.get(cache_key)
@@ -192,16 +211,21 @@ def update_menu_item(item_id: int, item_data: MenuItemUpdate, db: Session = Depe
     if int(payload.get("sub")) != res.merchant_id:
         raise HTTPException(status_code=403, detail="Unauthorized!")
 
-    # 🔥 SMART UPDATE
+    # 🔥 FIX: Strict Price Update Check
+    if item_data.price is not None:
+        if item_data.price <= 0:
+            raise HTTPException(status_code=400, detail="Invalid price!")
+        db_item.price = item_data.price
+
     if item_data.name and item_data.name.strip() not in ["", "string"]:
         db_item.name = item_data.name.strip()
-    if item_data.price and item_data.price > 0:
-        db_item.price = item_data.price
     if item_data.is_veg is not None:
         db_item.description = "Veg" if item_data.is_veg else "Non-Veg"
         
     db.commit()
-    if redis_client: redis_client.delete(f"menu_{db_item.restaurant_id}")
+    if redis_client: 
+        redis_client.delete(f"menu_{db_item.restaurant_id}")
+        redis_client.delete("all_restaurants_cache")
     return {"msg": "Updated successfully"}
 
 @app.delete("/restaurants/items/{item_id}")
@@ -209,14 +233,16 @@ def delete_menu_item(item_id: int, db: Session = Depends(get_db), payload: dict 
     db_item = db.query(MenuItem).filter(MenuItem.id == item_id).first()
     if not db_item: raise HTTPException(status_code=404, detail="Item not found")
         
-    res = db_item.restaurant_id
-    parent_res = db.query(Restaurant).filter(Restaurant.id == res).first()
+    res_id = db_item.restaurant_id
+    parent_res = db.query(Restaurant).filter(Restaurant.id == res_id).first()
     if int(payload.get("sub")) != parent_res.merchant_id:
         raise HTTPException(status_code=403, detail="Unauthorized delete!")
     
     db.delete(db_item)
     db.commit()
-    if redis_client: redis_client.delete(f"menu_{res}")
+    if redis_client: 
+        redis_client.delete(f"menu_{res_id}")
+        redis_client.delete("all_restaurants_cache")
     return {"msg": "Deleted by owner"}
 
 @app.delete("/reset-database")

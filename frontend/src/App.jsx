@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Search, ShoppingCart, X, LogOut, Home, ClipboardList, Bell, MapPin, RotateCcw, QrCode, Wallet, PlusCircle, CheckCircle, ChefHat, Bike, Phone, Receipt, Calendar, Key, IndianRupee } from 'lucide-react';
+import { Search, ShoppingCart, X, LogOut, Home, ClipboardList, Bell, MapPin, RotateCcw, QrCode, Wallet, PlusCircle, CheckCircle, ChefHat, Bike, Phone, Receipt, Calendar, Key, IndianRupee, TrendingUp } from 'lucide-react';
 
 // 🔥 JWT FIX: AXIOS INTERCEPTOR 🔥
 // Ye har ek API request ke header mein tumhara JWT token daal dega
@@ -49,6 +49,10 @@ function App() {
 
   const [orders, setOrders] = useState([]); 
   const [merchantOrders, setMerchantOrders] = useState([]); 
+  
+  // 🔥 NAYA: Merchant Analytics state (Port 8004 data)
+  const [merchantStats, setMerchantStats] = useState({ orders: 0, revenue: 0 });
+
   const [availableOrders, setAvailableOrders] = useState([]); 
   const [myRiderOrders, setMyRiderOrders] = useState([]); 
   
@@ -125,6 +129,11 @@ function App() {
         
         if (merchantResId) {
             axios.get(`http://localhost:8003/orders/restaurant/${merchantResId}`).then(res => setMerchantOrders(res.data)).catch(e=>console.log(e));
+            
+            // 🔥 NAYA: Analytics fetch logic (Port 8004)
+            axios.get(`http://localhost:8004/analytics/merchant/${merchantResId}`)
+                .then(res => setMerchantStats(res.data))
+                .catch(e => console.log("Analytics Service offline or ID mismatch"));
         }
     } else if (currentRole === 'rider') {
         axios.get(`http://localhost:8003/orders/available/`).then(res => setAvailableOrders(res.data)).catch(e=>console.log(e));
@@ -454,74 +463,91 @@ function App() {
         
         {/* --- 👨‍🍳 MERCHANT DASHBOARD --- */}
         {userRole === 'merchant' ? (
-          <div style={{ maxWidth: '1000px', margin: '0 auto', display: 'flex', gap: '30px' }}>
-            <div style={{ flex: 2, background: 'white', padding: '40px', borderRadius: '25px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)' }}>
-                <h2 style={{color:'#111827', marginBottom:'30px'}}>👨‍🍳 Live Orders</h2>
-                <div style={{marginBottom:'25px', padding:'15px', background:'#f9fafb', borderRadius:'12px'}}>
-                    <label style={{fontWeight:'bold', marginRight:'15px'}}>My Restaurants:</label>
-                    {myRestaurants.length > 0 ? (
-                        <select value={merchantResId} onChange={e => {setMerchantResId(e.target.value); sessionStorage.setItem('merchantResId', e.target.value);}} style={{padding:'10px 15px', borderRadius:'10px', border:'1px solid #ddd', fontWeight:'600', cursor:'pointer'}}>
-                            {myRestaurants.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-                        </select>
-                    ) : <span style={{color: '#ef4444', fontWeight: 'bold'}}>No restaurants yet! Create one below.</span>}
+          <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
+            
+            {/* 🔥 NAYA: MERCHANT EARNINGS HEADER (Port 8004 Analytics) */}
+            <div style={{ display: 'flex', gap: '20px', marginBottom: '30px' }}>
+                <div style={{ flex: 1, background: 'linear-gradient(135deg, #be123c 0%, #881337 100%)', padding: '30px', borderRadius: '25px', color: 'white', boxShadow: '0 10px 20px rgba(190, 18, 60, 0.2)' }}>
+                    <h3 style={{margin:0, opacity:0.9, display:'flex', alignItems:'center', gap:'10px'}}>Total Revenue <TrendingUp size={18}/></h3>
+                    <h1 style={{fontSize:'45px', margin:'10px 0'}}>₹{merchantStats.revenue.toFixed(2)}</h1>
+                    <p style={{margin:0, fontWeight:'bold'}}>{merchantStats.orders} Orders Processed</p>
                 </div>
-                {merchantOrders.length === 0 ? <p style={{color:'#6b7280'}}>No active orders.</p> : merchantOrders.map(o => (
-                    <div key={o.id} style={{ border: '1px solid #f3f4f6', padding: '20px', borderRadius: '15px', marginBottom: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div>
-                            <h3 style={{margin:0}}>Order #{o.id}</h3>
-                            <p style={{margin:'5px 0', fontSize:'14px', color:'#1f2937'}}><b>Items:</b> {o.items_summary || 'Standard Meal'}</p>
-                            <p style={{margin:0, color:'#6b7280', fontSize:'14px'}}>{o.status} | Total: ₹{o.total_amount}</p>
-                        </div>
-                        <div style={{display:'flex', gap:'10px'}}>
-                            {o.status === 'Pending' && <button onClick={() => updateStatus(o.id, 'Preparing')} style={{background:'#f59e0b', color:'white', border:'none', padding:'10px 20px', borderRadius:'10px', cursor:'pointer', fontWeight:'bold'}}>Accept</button>}
-                            {o.status === 'Preparing' && <button onClick={() => updateStatus(o.id, 'Ready')} style={{background:'#10b981', color:'white', border:'none', padding:'10px 20px', borderRadius:'10px', cursor:'pointer', fontWeight:'bold'}}>Food Ready</button>}
-                            {o.status === 'Ready' && <span style={{color:'#10b981', fontWeight:'bold'}}>✓ Waiting for Rider</span>}
-                        </div>
-                    </div>
-                ))}
+                <div style={{ flex: 1, background: 'white', padding: '30px', borderRadius: '25px', border: '1px solid #e2e8f0', display:'flex', flexDirection:'column', justifyContent:'center' }}>
+                    <h3 style={{margin:0, color:'#374151'}}>Merchant Console 👨‍🍳</h3>
+                    <p style={{fontSize:'22px', fontWeight:'bold', color:'#111827', marginTop:'15px'}}>Welcome, {user}!</p>
+                    <p style={{color:'#be123c', margin:0, fontWeight:'bold'}}>Track your business analytics live.</p>
+                </div>
             </div>
-            <div style={{ flex: 1, display:'flex', flexDirection:'column', gap:'20px' }}>
-                <div style={{ background: 'white', padding: '25px', borderRadius: '25px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)' }}>
-                    <h3 style={{marginTop:0, color:'#be123c'}}>🏠 Add Restaurant</h3>
-                    <input type="text" placeholder="Restaurant Name" value={newResName} onChange={e => setNewResName(e.target.value)} style={{width:'100%', padding:'12px', borderRadius:'10px', border:'1px solid #ddd', marginBottom:'10px', boxSizing:'border-box'}}/>
-                    <button onClick={createRestaurant} style={{width:'100%', padding:'12px', background:'#be123c', color:'white', border:'none', borderRadius:'10px', fontWeight:'bold', cursor:'pointer'}}>Create</button>
-                </div>
-                
-                {myRestaurants.length > 0 && (
-                    <div style={{ background: 'white', padding: '25px', borderRadius: '25px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)' }}>
-                        <h3 style={{marginTop:0, color:'#10b981'}}>🥘 Add Menu Item</h3>
-                        <input type="text" placeholder="Dish Name" value={newItem.name} onChange={e => setNewItem({...newItem, name: e.target.value})} style={{width:'100%', padding:'12px', borderRadius:'10px', border:'1px solid #ddd', marginBottom:'10px', boxSizing:'border-box'}}/>
-                        <input type="number" placeholder="Price (₹)" value={newItem.price} onChange={e => setNewItem({...newItem, price: e.target.value})} style={{width:'100%', padding:'12px', borderRadius:'10px', border:'1px solid #ddd', marginBottom:'10px', boxSizing:'border-box'}}/>
-                        <div style={{display:'flex', gap:'15px', marginBottom:'15px'}}>
-                            <label style={{display:'flex', alignItems:'center', gap:'5px', cursor:'pointer'}}><input type="radio" checked={newItem.is_veg} onChange={() => setNewItem({...newItem, is_veg: true})}/> <span style={{color:'#10b981', fontWeight:'bold'}}>Veg 🟢</span></label>
-                            <label style={{display:'flex', alignItems:'center', gap:'5px', cursor:'pointer'}}><input type="radio" checked={!newItem.is_veg} onChange={() => setNewItem({...newItem, is_veg: false})}/> <span style={{color:'#ef4444', fontWeight:'bold'}}>Non-Veg 🔴</span></label>
-                        </div>
-                        <button onClick={addMenuItem} style={{width:'100%', padding:'12px', background:'#10b981', color:'white', border:'none', borderRadius:'10px', fontWeight:'bold', cursor:'pointer'}}><PlusCircle size={18} style={{verticalAlign:'middle', marginRight:'5px'}}/> Add Dish</button>
-                    </div>
-                )}
 
-                {myRestaurants.length > 0 && merchantResId && (
-                    <div style={{ background: 'white', padding: '25px', borderRadius: '25px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)', marginTop: '20px' }}>
-                        <h3 style={{marginTop:0, color:'#374151'}}>📋 Manage Menu</h3>
-                        {myRestaurants.find(r => r.id.toString() === merchantResId?.toString())?.items?.length > 0 ? (
-                            myRestaurants.find(r => r.id.toString() === merchantResId.toString()).items.map(item => (
-                                <div key={item.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'15px', borderBottom:'1px solid #f3f4f6'}}>
-                                    <div>
-                                        <b style={{fontSize:'15px', color:'#1f2937'}}>{item.is_veg ? '🟢' : '🔴'} {item.name}</b>
-                                        <br/>
-                                        <span style={{fontSize:'14px', color:'#6b7280', fontWeight:'bold'}}>₹{item.price}</span>
-                                    </div>
-                                    <div style={{display:'flex', gap:'10px'}}>
-                                        <button onClick={() => updateMenuItem(item)} style={{padding:'6px 12px', background:'#f8fafc', border:'1px solid #cbd5e1', borderRadius:'8px', cursor:'pointer'}}>✏️</button>
-                                        <button onClick={() => deleteMenuItem(item.id)} style={{padding:'6px 12px', background:'#fef2f2', border:'1px solid #fca5a5', color:'#ef4444', borderRadius:'8px', cursor:'pointer'}}>🗑️</button>
-                                    </div>
-                                </div>
-                            ))
-                        ) : (
-                            <p style={{color:'#9ca3af', fontSize:'14px'}}>No items added yet. Add some above!</p>
-                        )}
+            <div style={{ display: 'flex', gap: '30px' }}>
+                <div style={{ flex: 2, background: 'white', padding: '40px', borderRadius: '25px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)' }}>
+                    <h2 style={{color:'#111827', marginBottom:'30px'}}>👨‍🍳 Live Orders</h2>
+                    <div style={{marginBottom:'25px', padding:'15px', background:'#f9fafb', borderRadius:'12px'}}>
+                        <label style={{fontWeight:'bold', marginRight:'15px'}}>My Restaurants:</label>
+                        {myRestaurants.length > 0 ? (
+                            <select value={merchantResId} onChange={e => {setMerchantResId(e.target.value); sessionStorage.setItem('merchantResId', e.target.value);}} style={{padding:'10px 15px', borderRadius:'10px', border:'1px solid #ddd', fontWeight:'600', cursor:'pointer'}}>
+                                {myRestaurants.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                            </select>
+                        ) : <span style={{color: '#ef4444', fontWeight: 'bold'}}>No restaurants yet! Create one below.</span>}
                     </div>
-                )}
+                    {merchantOrders.length === 0 ? <p style={{color:'#6b7280'}}>No active orders.</p> : merchantOrders.map(o => (
+                        <div key={o.id} style={{ border: '1px solid #f3f4f6', padding: '20px', borderRadius: '15px', marginBottom: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div>
+                                <h3 style={{margin:0}}>Order #{o.id}</h3>
+                                <p style={{margin:'5px 0', fontSize:'14px', color:'#1f2937'}}><b>Items:</b> {o.items_summary || 'Standard Meal'}</p>
+                                <p style={{margin:0, color:'#6b7280', fontSize:'14px'}}>{o.status} | Total: ₹{o.total_amount}</p>
+                            </div>
+                            <div style={{display:'flex', gap:'10px'}}>
+                                {o.status === 'Pending' && <button onClick={() => updateStatus(o.id, 'Preparing')} style={{background:'#f59e0b', color:'white', border:'none', padding:'10px 20px', borderRadius:'10px', cursor:'pointer', fontWeight:'bold'}}>Accept</button>}
+                                {o.status === 'Preparing' && <button onClick={() => updateStatus(o.id, 'Ready')} style={{background:'#10b981', color:'white', border:'none', padding:'10px 20px', borderRadius:'10px', cursor:'pointer', fontWeight:'bold'}}>Food Ready</button>}
+                                {o.status === 'Ready' && <span style={{color:'#10b981', fontWeight:'bold'}}>✓ Waiting for Rider</span>}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+                <div style={{ flex: 1, display:'flex', flexDirection:'column', gap:'20px' }}>
+                    <div style={{ background: 'white', padding: '25px', borderRadius: '25px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)' }}>
+                        <h3 style={{marginTop:0, color:'#be123c'}}>🏠 Add Restaurant</h3>
+                        <input type="text" placeholder="Restaurant Name" value={newResName} onChange={e => setNewResName(e.target.value)} style={{width:'100%', padding:'12px', borderRadius:'10px', border:'1px solid #ddd', marginBottom:'10px', boxSizing:'border-box'}}/>
+                        <button onClick={createRestaurant} style={{width:'100%', padding:'12px', background:'#be123c', color:'white', border:'none', borderRadius:'10px', fontWeight:'bold', cursor:'pointer'}}>Create</button>
+                    </div>
+                    
+                    {myRestaurants.length > 0 && (
+                        <div style={{ background: 'white', padding: '25px', borderRadius: '25px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)' }}>
+                            <h3 style={{marginTop:0, color:'#10b981'}}>🥘 Add Menu Item</h3>
+                            <input type="text" placeholder="Dish Name" value={newItem.name} onChange={e => setNewItem({...newItem, name: e.target.value})} style={{width:'100%', padding:'12px', borderRadius:'10px', border:'1px solid #ddd', marginBottom:'10px', boxSizing:'border-box'}}/>
+                            <input type="number" placeholder="Price (₹)" value={newItem.price} onChange={e => setNewItem({...newItem, price: e.target.value})} style={{width:'100%', padding:'12px', borderRadius:'10px', border:'1px solid #ddd', marginBottom:'10px', boxSizing:'border-box'}}/>
+                            <div style={{display:'flex', gap:'15px', marginBottom:'15px'}}>
+                                <label style={{display:'flex', alignItems:'center', gap:'5px', cursor:'pointer'}}><input type="radio" checked={newItem.is_veg} onChange={() => setNewItem({...newItem, is_veg: true})}/> <span style={{color:'#10b981', fontWeight:'bold'}}>Veg 🟢</span></label>
+                                <label style={{display:'flex', alignItems:'center', gap:'5px', cursor:'pointer'}}><input type="radio" checked={!newItem.is_veg} onChange={() => setNewItem({...newItem, is_veg: false})}/> <span style={{color:'#ef4444', fontWeight:'bold'}}>Non-Veg 🔴</span></label>
+                            </div>
+                            <button onClick={addMenuItem} style={{width:'100%', padding:'12px', background:'#10b981', color:'white', border:'none', borderRadius:'10px', fontWeight:'bold', cursor:'pointer'}}><PlusCircle size={18} style={{verticalAlign:'middle', marginRight:'5px'}}/> Add Dish</button>
+                        </div>
+                    )}
+
+                    {myRestaurants.length > 0 && merchantResId && (
+                        <div style={{ background: 'white', padding: '25px', borderRadius: '25px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)', marginTop: '20px' }}>
+                            <h3 style={{marginTop:0, color:'#374151'}}>📋 Manage Menu</h3>
+                            {myRestaurants.find(r => r.id.toString() === merchantResId?.toString())?.items?.length > 0 ? (
+                                myRestaurants.find(r => r.id.toString() === merchantResId.toString()).items.map(item => (
+                                    <div key={item.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'15px', borderBottom:'1px solid #f3f4f6'}}>
+                                        <div>
+                                            <b style={{fontSize:'15px', color:'#1f2937'}}>{item.is_veg ? '🟢' : '🔴'} {item.name}</b>
+                                            <br/>
+                                            <span style={{fontSize:'14px', color:'#6b7280', fontWeight:'bold'}}>₹{item.price}</span>
+                                        </div>
+                                        <div style={{display:'flex', gap:'10px'}}>
+                                            <button onClick={() => updateMenuItem(item)} style={{padding:'6px 12px', background:'#f8fafc', border:'1px solid #cbd5e1', borderRadius:'8px', cursor:'pointer'}}>✏️</button>
+                                            <button onClick={() => deleteMenuItem(item.id)} style={{padding:'6px 12px', background:'#fef2f2', border:'1px solid #fca5a5', color:'#ef4444', borderRadius:'8px', cursor:'pointer'}}>🗑️</button>
+                                        </div>
+                                    </div>
+                                ))
+                            ) : (
+                                <p style={{color:'#9ca3af', fontSize:'14px'}}>No items added yet.</p>
+                            )}
+                        </div>
+                    )}
+                </div>
             </div>
           </div>
         ) : userRole === 'rider' ? (
@@ -640,7 +666,7 @@ function App() {
                                         </div>
                                     ) : (
                                         ['Preparing', 'Ready'].includes(activeOrder.status) && (
-                                            <div style={{textAlign:'center', marginTop:'20px'}}><p style={{color:'#6b7280', fontStyle:'italic'}}>Expected Delivery in ~25 Mins. Preparing freshly!</p></div>
+                                            <div style={{textAlign:'center', marginTop:'20px'}}><p style={{color:'#6b7280', fontStyle:'italic'}}>Expected Delivery in ~25 Mins.</p></div>
                                         )
                                     )}
                                 </div>
@@ -654,16 +680,11 @@ function App() {
                         <Search size={22} color="#9ca3af" style={{position:'absolute', left:'18px', top:'18px'}}/>
                         <input type="text" placeholder="Search for Misal, Biryani..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} style={{ width: '100%', padding: '18px 18px 18px 55px', borderRadius: '35px', border: '1px solid #e2e8f0', fontSize: '17px', outline:'none', boxShadow: '0 4px 6px rgba(0,0,0,0.05)' }} />
                     </div>
-                    
                     <div style={{ display: 'flex', gap: '15px', justifyContent: 'center' }}>
-                        <button onClick={() => setFilterVeg(!filterVeg)} style={{ padding: '10px 20px', borderRadius: '25px', border: filterVeg ? '2px solid #10b981' : '1px solid #e2e8f0', background: filterVeg ? '#ecfdf5' : 'white', color: filterVeg ? '#065f46' : '#4b5563', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', transition: 'all 0.2s' }}>
-                            <div style={{ width: '12px', height: '12px', border: '1px solid #10b981', display: 'flex', justifyContent: 'center', alignItems: 'center', background: 'white' }}>
-                                <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }}></div>
-                            </div>
-                            Pure Veg
+                        <button onClick={() => setFilterVeg(!filterVeg)} style={{ padding: '10px 20px', borderRadius: '25px', border: filterVeg ? '2px solid #10b981' : '1px solid #e2e8f0', background: filterVeg ? '#ecfdf5' : 'white', color: filterVeg ? '#065f46' : '#4b5563', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div style={{ width: '12px', height: '12px', border: '1px solid #10b981', display: 'flex', justifyContent: 'center', alignItems: 'center', background: 'white' }}><div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }}></div></div> Pure Veg
                         </button>
-                        
-                        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ padding: '10px 20px', borderRadius: '25px', border: '1px solid #e2e8f0', background: 'white', color: '#4b5563', fontWeight: 'bold', cursor: 'pointer', outline: 'none' }}>
+                        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ padding: '10px 20px', borderRadius: '25px', border: '1px solid #e2e8f0', background: 'white', color: '#4b5563', fontWeight: 'bold', cursor: 'pointer' }}>
                             <option value="none">Sort by: Recommended</option>
                             <option value="lowToHigh">Price: Low to High</option>
                             <option value="highToLow">Price: High to Low</option>
@@ -683,9 +704,7 @@ function App() {
                                     <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px', alignItems:'center' }}>
                                         <div>
                                             <div style={{display:'flex', alignItems:'center', gap:'8px', marginBottom:'4px'}}>
-                                                <div style={{width:'12px', height:'12px', border: i.is_veg ? '1px solid #10b981' : '1px solid #ef4444', display:'flex', justifyContent:'center', alignItems:'center'}}>
-                                                    <div style={{width:'6px', height:'6px', borderRadius:'50%', background: i.is_veg ? '#10b981' : '#ef4444'}}></div>
-                                                </div>
+                                                <div style={{width:'12px', height:'12px', border: i.is_veg ? '1px solid #10b981' : '1px solid #ef4444', display:'flex', justifyContent:'center', alignItems:'center'}}><div style={{width:'6px', height:'6px', borderRadius:'50%', background: i.is_veg ? '#10b981' : '#ef4444'}}></div></div>
                                                 <b style={{color:'#1f2937', fontSize:'16px'}}>{i.name}</b>
                                             </div>
                                             <span style={{fontSize:'14px', color:'#6b7280', fontWeight:'600'}}>₹{i.price}</span>
@@ -700,10 +719,9 @@ function App() {
             </div>
           ) : (
             
-            /* --- 🧾 DETAILED CUSTOMER HISTORY (DIGITAL RECEIPT) --- */
+            /* --- 🧾 DETAILED CUSTOMER HISTORY --- */
             <div style={{ maxWidth: '850px', margin: '0 auto', background: 'white', padding: '45px', borderRadius: '30px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)' }}>
                 <h2 style={{borderBottom:'2px solid #f3f4f6', paddingBottom:'20px', marginBottom:'30px', color:'#111827', display:'flex', alignItems:'center', gap:'10px'}}><Receipt size={28}/> Order History & Receipts</h2>
-                
                 {pastOrders.length === 0 ? <p style={{textAlign:'center', color:'#9ca3af', padding:'40px 0'}}>No past orders found.</p> : [...pastOrders].reverse().map(o => (
                     <div key={o.id} style={{ border: '1px solid #e5e7eb', borderRadius: '20px', padding: '25px', marginBottom: '25px', background:'#fdfdfd' }}>
                         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', borderBottom:'1px dashed #d1d5db', paddingBottom:'15px', marginBottom:'15px' }}>
@@ -716,13 +734,11 @@ function App() {
                                 <span style={{background:'#d1fae5', color:'#065f46', padding:'6px 15px', borderRadius:'20px', fontSize:'13px', fontWeight:'bold'}}>✓ Delivered</span>
                             </div>
                         </div>
-                        
                         <div style={{background:'#f9fafb', padding:'15px', borderRadius:'12px', marginBottom:'15px'}}>
                             <p style={{margin:'0 0 8px 0', color:'#111827', fontSize:'15px'}}><b>Items:</b> {o.items_summary || 'Standard Meal'}</p>
                             <p style={{margin:'0 0 8px 0', color:'#4b5563', fontSize:'14px'}}><b>Delivered To:</b> {o.address?.substring(0, 40)}...</p>
                             <p style={{margin:0, color:'#4b5563', fontSize:'14px'}}><b>Paid via:</b> PuneFood Wallet</p>
                         </div>
-                        
                         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                             <div style={{fontSize:'22px', fontWeight:'900', color:'#111827'}}>Total: ₹{o.total_amount}</div>
                             <button onClick={() => { setCart([{name: "Reorder Item", price: o.total_amount-40, restaurantId: o.restaurant_id, restaurantName: o.restaurant_name}]); setIsCartOpen(true); setView('home'); }} style={{background:'#fef2f2', color:'#be123c', border:'1px solid #be123c', padding:'10px 20px', borderRadius:'14px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'8px', cursor:'pointer'}}><RotateCcw size={18}/> Reorder</button>
@@ -744,34 +760,19 @@ function App() {
             {cart.length > 0 ? (
                 <div style={{flex: 1, overflowY: 'auto'}}>
                     <div style={{background:'#fff1f2', padding:'15px', borderRadius:'12px', marginBottom:'25px'}}><p style={{color:'#be123c', fontWeight:'bold', margin:0}}>From: {cart[0].restaurantName}</p></div>
-                    
-                    {/* 🔥 NAYA: Saved Address Dropdown (Sirf agar saved address hain toh dikhega) */}
                     <div style={{ marginBottom: '30px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                             <h4 style={{ margin: 0, color:'#374151' }}>Delivery Address</h4>
                             <button onClick={detectLocation} style={{ background: 'none', border: 'none', color: '#be123c', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', textDecoration: 'underline' }}>Auto-Detect</button>
                         </div>
-                        
                         {savedAddresses.length > 0 && (
-                            <select 
-                                onChange={(e) => {
-                                    if(e.target.value !== "new") {
-                                        setAddress(e.target.value);
-                                        sessionStorage.setItem('userAddress', e.target.value);
-                                    }
-                                }}
-                                style={{ width: '100%', padding: '12px', borderRadius: '12px', border: '1px solid #ddd', marginBottom: '10px', backgroundColor: '#f8fafc', outline: 'none' }}
-                            >
+                            <select onChange={(e) => { if(e.target.value !== "new") { setAddress(e.target.value); sessionStorage.setItem('userAddress', e.target.value); }}} style={{ width: '100%', padding: '12px', borderRadius: '12px', border: '1px solid #ddd', marginBottom: '10px', backgroundColor: '#f8fafc', outline: 'none' }}>
                                 <option value="new">-- Select a Saved Address --</option>
-                                {savedAddresses.map((addr, idx) => (
-                                    <option key={idx} value={addr}>{addr.substring(0, 30)}...</option>
-                                ))}
+                                {savedAddresses.map((addr, idx) => ( <option key={idx} value={addr}>{addr.substring(0, 30)}...</option> ))}
                             </select>
                         )}
-
                         <textarea value={address === 'Select your address' ? '' : address} onChange={(e) => { setAddress(e.target.value); sessionStorage.setItem('userAddress', e.target.value); }} placeholder="House No, Street Name, Pune..." style={{ width: '100%', padding: '12px', borderRadius: '12px', border: '1px solid #ddd', minHeight: '80px', boxSizing: 'border-box', outline: 'none' }} />
                     </div>
-
                     <div style={{marginBottom:'30px'}}>
                         <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px'}}>
                             <h4 style={{margin:0, color:'#374151'}}>Payment Method</h4>
@@ -783,14 +784,7 @@ function App() {
                             ))}
                         </div>
                         {paymentMethod === 'Wallet' && <p style={{fontSize:'12px', color:'#666', marginTop:'10px', textAlign:'center'}}>Available Balance: ₹{walletBalance.toFixed(2)}</p>}
-                        {paymentMethod === 'UPI' && (
-                            <div style={{textAlign:'center', padding:'20px', background:'#f8fafc', borderRadius:'15px', marginTop:'15px', border:'1px dashed #cbd5e1'}}>
-                                <QrCode size={80} style={{margin:'0 auto', color:'#111827'}}/>
-                                <p style={{fontSize:'13px', color:'#64748b', marginTop:'10px', fontWeight:'bold'}}>Scan QR to Pay</p>
-                            </div>
-                        )}
                     </div>
-
                     <div style={{ marginTop: 'auto', padding: '25px', backgroundColor: '#f9fafb', borderRadius: '20px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', color:'#6b7280' }}><span>Item Total</span><span>₹{cart.reduce((s,i)=>s+i.price,0)}</span></div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', color:'#6b7280' }}><span>Delivery Fee</span><span>₹40</span></div>

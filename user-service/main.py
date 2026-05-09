@@ -11,7 +11,7 @@ import datetime
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # --- 🗄️ DATABASE SETUP (POSTGRESQL) ---
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:1234@localhost:5433/user_db"
+SQLALCHEMY_DATABASE_URL = "postgresql://postgres:1234@localhost:5432/user_db"
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -35,7 +35,6 @@ class User(Base):
     phone_number = Column(String, nullable=False, default="Not Provided") 
     vehicle_number = Column(String, nullable=True)
 
-# 🔥 NAYA: Invisible Address Book Model
 class AddressBook(Base):
     __tablename__ = "address_book"
     id = Column(Integer, primary_key=True, index=True)
@@ -55,9 +54,8 @@ def get_db():
 # --- 🛡️ THE NEW SECURITY GUARD (Token Decoder) ---
 def verify_user_token(token: HTTPAuthorizationCredentials = Depends(security)):
     try:
-        # Token ko open/decode karke payload nikal rahe hain
         payload = jwt.decode(token.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload  # Iske andar humara "sub" (user_id) aur "role" chhipa hai
+        return payload 
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expire ho gaya hai. Wapas login karo!")
     except jwt.InvalidTokenError:
@@ -85,7 +83,6 @@ class UserLogin(BaseModel):
 class WalletUpdate(BaseModel):
     amount: float
 
-# 🔥 NAYA: Schema for Address Endpoint
 class AddressCreate(BaseModel):
     address: str
 
@@ -145,18 +142,31 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
         "wallet_balance": db_user.wallet_balance
     }
 
-# --- 💰 PROTECTED WALLET APIS (Strict Authorization Added) ---
+# --- 💰 PROTECTED WALLET APIS ---
 
 @app.get("/users/{user_id}")
 def get_user(user_id: int, db: Session = Depends(get_db), payload: dict = Depends(verify_user_token)):
-    # 🔥 FIX: STRICT AUTHORIZATION HATA DIYA taaki Customer Rider ka naam dekh sake (No 403 error)
     user = db.query(User).filter(User.id == user_id).first()
     if not user: raise HTTPException(status_code=404)
-    return user
+    
+    # 🔥 FIX: Password aur Sensitive data leak protection
+    user_data = {
+        "id": user.id,
+        "name": user.name,
+        "role": user.role
+    }
+    
+    # Wallet aur Phone tabhi dikhao agar owner mang raha ho
+    if int(payload.get("sub")) == user_id:
+        user_data["email"] = user.email
+        user_data["wallet_balance"] = user.wallet_balance
+        user_data["phone_number"] = user.phone_number
+        user_data["vehicle_number"] = user.vehicle_number
+        
+    return user_data
 
 @app.post("/users/{user_id}/wallet/topup")
 def topup_wallet(user_id: int, topup: WalletUpdate, db: Session = Depends(get_db), payload: dict = Depends(verify_user_token)):
-    # 🔥 AUTHORIZATION CHECK
     if int(payload.get("sub")) != user_id:
         raise HTTPException(status_code=403, detail="Chori pakdi gayi! Apne hi wallet mein paise daal sakte ho!")
 
@@ -168,31 +178,38 @@ def topup_wallet(user_id: int, topup: WalletUpdate, db: Session = Depends(get_db
 
 @app.post("/users/{user_id}/wallet/deduct")
 def deduct_wallet(user_id: int, deduct: WalletUpdate, db: Session = Depends(get_db), payload: dict = Depends(verify_user_token)):
-    # 🔥 AUTHORIZATION CHECK
     if int(payload.get("sub")) != user_id:
-        raise HTTPException(status_code=403, detail="Error")
+        raise HTTPException(status_code=403, detail="Authorization Error: Cannot access this wallet!")
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user: raise HTTPException(status_code=404, detail="User not found")
     
     if user.wallet_balance < deduct.amount:
         raise HTTPException(status_code=400, detail="Insufficient Wallet Balance!")
+    
     user.wallet_balance -= deduct.amount
     db.commit()
     return {"msg": "Deduction successful", "balance": user.wallet_balance}
 
-# --- 📍 NAYA: INVISIBLE ADDRESS APIS ---
+# --- 📍 INVISIBLE ADDRESS APIS (Now Secured) ---
 @app.post("/users/{user_id}/address")
-def save_address(user_id: int, addr: AddressCreate, db: Session = Depends(get_db)):
-    # Duplicate check taaki DB na bhare
+def save_address(user_id: int, addr: AddressCreate, db: Session = Depends(get_db), payload: dict = Depends(verify_user_token)):
+    # 🔥 FIX: Authentication check added
+    if int(payload.get("sub")) != user_id:
+        raise HTTPException(status_code=403, detail="Access denied!")
+
     existing = db.query(AddressBook).filter(AddressBook.user_id == user_id, AddressBook.address_text == addr.address).first()
     if not existing:
         new_addr = AddressBook(user_id=user_id, address_text=addr.address)
         db.add(new_addr)
         db.commit()
-    return {"msg": "Address saved invisibly!"}
+    return {"msg": "Address saved securely!"}
 
 @app.get("/users/{user_id}/addresses")
-def get_addresses(user_id: int, db: Session = Depends(get_db)):
+def get_addresses(user_id: int, db: Session = Depends(get_db), payload: dict = Depends(verify_user_token)):
+    # 🔥 FIX: Authentication check added
+    if int(payload.get("sub")) != user_id:
+        raise HTTPException(status_code=403, detail="Access denied!")
+
     addresses = db.query(AddressBook).filter(AddressBook.user_id == user_id).all()
     return [addr.address_text for addr in addresses]

@@ -8,3 +8,5 @@ node_modules/
 dist/
 build/
 .vscode/
+OLD/
+kafka_2.13-3.7.0/

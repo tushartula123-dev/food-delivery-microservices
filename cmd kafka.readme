@@ -1,0 +1,4 @@
+bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic food_delivery_orders --from-beginning
+bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic food_delivery_orders
+redis-cli monitor
+https://dbdiagram.io/d/69eb87f5c6a36f9c1b714b9d

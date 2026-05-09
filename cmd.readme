@@ -1,0 +1,30 @@
+sudo -u postgres psql
+\C database name
+\dt to see the table of that database 
+source venv/bin/activate
+
+
+
+cd ~/food-delivery-microservices/kafka_2.13-3.7.0
+bin/zookeeper-server-start.sh config/zookeeper.properties
+
+cd ~/food-delivery-microservices/kafka_2.13-3.7.0
+bin/kafka-server-start.sh config/server.properties
+
+cd ~/food-delivery-microservices/user-service
+python3 -m uvicorn main:app --port 8001 --reload
+
+cd ~/food-delivery-microservices/restaurant-service
+python3 -m uvicorn main:app --port 8002 --reload
+
+cd ~/food-delivery-microservices/order-service
+python3 -m uvicorn main:app --port 8003 --reload
+
+cd ~/food-delivery-microservices/analytics_service
+python3 -m uvicorn main:app --port 8004 --reload
+
+
+
+cd ~/food-delivery-microservices/frontend
+npm run dev
+

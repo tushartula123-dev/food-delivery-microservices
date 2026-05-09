@@ -22,7 +22,7 @@ app.add_middleware(
 )
 
 # --- 🐘 DATABASE SETUP (PostgreSQL 16) ---
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:1234@localhost:5433/order_db"
+SQLALCHEMY_DATABASE_URL = "postgresql://postgres:1234@localhost:5432/order_db"
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -122,10 +122,13 @@ async def create_order(order: dict, db: Session = Depends(get_db)):
 
         await manager.broadcast(f"🛎️ New Order #{new_order.id} received!", f"merchant_{new_order.restaurant_id}")
 
+        # ✅ UPDATED KAFKA MESSAGE: 'event' aur 'amount' add kiya analytics ke liye
         if producer:
             producer.send('food_delivery_orders', {
+                "event": "ORDER_PLACED",
                 "order_id": new_order.id, 
                 "restaurant_id": new_order.restaurant_id,
+                "amount": new_order.total_amount,
                 "address": new_order.address
             })
         return new_order
@@ -171,6 +174,15 @@ async def update_status(order_id: int, status: str, db: Session = Depends(get_db
     
     order.status = status
     db.commit()
+
+    # ✅ UPDATED KAFKA MESSAGE: Jab order Deliver ho jaye toh analytics ko batao
+    if producer and status == "Delivered":
+        producer.send('food_delivery_orders', {
+            "event": "ORDER_DELIVERED",
+            "order_id": order.id,
+            "rider_id": order.rider_id,
+            "payout": 40.0 # Standard payout per delivery
+        })
 
     if status == "Ready":
         await manager.broadcast(f"📦 Order #{order.id} is ready for pickup!", "riders")
