@@ -1,9 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from kafka import KafkaConsumer
-from sqlalchemy import create_engine, text
-import json
-import threading
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, and_
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+from datetime import datetime, timedelta
+import requests
+import jwt
+import redis
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 app = FastAPI(title="PuneFood Analytics & Dashboard Service")
 
@@ -15,97 +19,145 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 🐘 DATABASE SETUP ---
-# Port 5432 for Ubuntu standard
+SECRET_KEY = "pune_food_super_secret"
+ALGORITHM = "HS256"
+security = HTTPBearer()
+
+# --- 🔴 REDIS SETUP (for token blacklist) ---
+try:
+    redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+    redis_client.ping()
+    print("✅ Redis connected in Analytics Service")
+except Exception as e:
+    print(f"⚠️ Redis not available: {e}")
+    redis_client = None
+
+# --- 🐘 DATABASE SETUP (Connecting to Order DB directly) ---
 SQLALCHEMY_DATABASE_URL = "postgresql://postgres:1234@localhost:5432/order_db"
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-# --- 🏦 THE LEDGERS (Memory Storage) ---
-merchant_stats = {} 
-rider_stats = {}    
+class Order(Base):
+    __tablename__ = "orders"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, index=True)
+    restaurant_id = Column(Integer, index=True)
+    rider_id = Column(Integer, index=True, nullable=True)
+    total_amount = Column(Float)
+    status = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
-def load_historical_data():
-    print("\n" + "⏳"*10 + " LOADING HISTORY FROM DB " + "⏳"*10)
+def get_db():
+    db = SessionLocal()
     try:
-        with engine.connect() as conn:
-            # 1. Merchant History: Sabhi orders ka total hisaab
-            orders = conn.execute(text("SELECT restaurant_id, COUNT(id), SUM(total_amount) FROM orders GROUP BY restaurant_id")).fetchall()
-            for row in orders:
-                if row[0] is not None:
-                    res_id = str(row[0])
-                    merchant_stats[res_id] = {"orders": row[1], "revenue": float(row[2] or 0.0)}
-            
-            # 2. Rider History: Delivered orders ka hisaab (₹40 per delivery)
-            deliveries = conn.execute(text("SELECT rider_id, COUNT(id) FROM orders WHERE status='Delivered' AND rider_id IS NOT NULL GROUP BY rider_id")).fetchall()
-            for row in deliveries:
-                rider_id = str(row[0])
-                rider_stats[rider_id] = {"deliveries": row[1], "earnings": float(row[1] * 40.0)}
-                
-        print("✅ PURANA DATA SUCCESSFUL LOAD HO GAYA!")
-    except Exception as e:
-        print(f"⚠️ History Load Error: {e}")
-    print("⏳"*27 + "\n")
+        yield db
+    finally:
+        db.close()
 
-def start_smart_cashier():
-    print("\n" + "🏦"*20)
-    print("🚀 SMART CASHIER (KAFKA CONSUMER) ONLINE!")
-    print("🎧 Listening to: 'food_delivery_orders'...")
-    print("🏦"*20 + "\n")
-    
+# --- 🛡️ TOKEN VERIFIER (with Redis blacklist) ---
+def verify_token(token: HTTPAuthorizationCredentials = Depends(security)):
     try:
-        consumer = KafkaConsumer(
-            'food_delivery_orders',
-            bootstrap_servers=['localhost:9092'],
-            value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-            # 'earliest' taaki missed messages bhi mil jayein
-            auto_offset_reset='earliest',
-            group_id='analytics_group'
-        )
-        
-        for message in consumer:
-            data = message.value
-            event_type = data.get("event")
-            
-            # 👨‍🍳 KHEL 1: MERCHANT UPDATES
-            if event_type == "ORDER_PLACED":
-                res_id = str(data.get("restaurant_id"))
-                amount = float(data.get("amount", 0.0))
-                
-                if res_id not in merchant_stats:
-                    merchant_stats[res_id] = {"orders": 0, "revenue": 0.0}
-                
-                merchant_stats[res_id]["orders"] += 1
-                merchant_stats[res_id]["revenue"] += amount
-                print(f"📈 [LIVE] Merchant {res_id}: New Order! Total Revenue: ₹{merchant_stats[res_id]['revenue']}")
+        payload = jwt.decode(token.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        # 🔥 INSTANT REVOCATION CHECK
+        if redis_client and redis_client.get(f"blacklist:{payload.get('sub')}"):
+            raise HTTPException(status_code=401, detail="Session revoked. Please login again.")
+        return payload
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or Expired Token")
 
-            # 🛵 KHEL 2: RIDER UPDATES
-            elif event_type == "ORDER_DELIVERED":
-                rider_id = str(data.get("rider_id"))
-                payout = float(data.get("payout", 40.0))
-                
-                if rider_id not in rider_stats:
-                    rider_stats[rider_id] = {"deliveries": 0, "earnings": 0.0}
-                
-                rider_stats[rider_id]["deliveries"] += 1
-                rider_stats[rider_id]["earnings"] += payout
-                print(f"💸 [LIVE] Rider {rider_id}: Delivered! Total Earnings: ₹{rider_stats[rider_id]['earnings']}")
-            
-    except Exception as e:
-        print(f"⚠️ KAFKA CONSUMER ERROR: {e}")
+# --- 🧠 TIME-SERIES HELPER ---
+def get_time_filters():
+    now = datetime.utcnow()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday_start = today_start - timedelta(days=1)
+    week_start = today_start - timedelta(days=today_start.weekday())
+    month_start = today_start.replace(day=1)
+    year_start = today_start.replace(month=1, day=1)
+    return today_start, yesterday_start, week_start, month_start, year_start
 
-@app.on_event("startup")
-def startup_event():
-    # Pehle database se purana data uthao
-    load_historical_data()
-    # Phir Kafka listener thread shuru karo
-    threading.Thread(target=start_smart_cashier, daemon=True).start()
+def calculate_stats(db: Session, filter_condition, is_rider=False):
+    today, yesterday, week, month, year = get_time_filters()
+    valid_statuses = ["Delivered"] if is_rider else ["Picked Up", "Delivered"]
+    base_query = db.query(Order).filter(filter_condition, Order.status.in_(valid_statuses))
+    def get_revenue(query):
+        orders = query.all()
+        if is_rider:
+            return float(len(orders) * 40.0)
+        else:
+            return sum([float(o.total_amount - 40.0) for o in orders])
+    total_rev = get_revenue(base_query)
+    today_rev = get_revenue(base_query.filter(Order.created_at >= today))
+    yesterday_rev = get_revenue(base_query.filter(and_(Order.created_at >= yesterday, Order.created_at < today)))
+    week_rev = get_revenue(base_query.filter(Order.created_at >= week))
+    month_rev = get_revenue(base_query.filter(Order.created_at >= month))
+    year_rev = get_revenue(base_query.filter(Order.created_at >= year))
+    return {
+        "total_orders_completed": base_query.count(),
+        "earnings": {
+            "lifetime": total_rev,
+            "today": today_rev,
+            "yesterday": yesterday_rev,
+            "this_week": week_rev,
+            "this_month": month_rev,
+            "this_year": year_rev
+        }
+    }
 
-# --- 🌐 ANALYTICS ENDPOINTS ---
+# --- 🌐 ANALYTICS ENDPOINTS (with authorization) ---
+@app.get("/analytics/restaurant/{restaurant_id}")
+def get_restaurant_stats(restaurant_id: int, payload: dict = Depends(verify_token)):
+    """Only merchant who owns this restaurant OR staff of that merchant can view"""
+    try:
+        res = requests.get(f"http://localhost:8002/restaurants/{restaurant_id}", timeout=2)
+        res.raise_for_status()
+        restaurant = res.json()
+        merchant_id = restaurant.get("merchant_id")
+    except Exception:
+        raise HTTPException(status_code=503, detail="Could not fetch restaurant details")
+    user_role = payload.get("role")
+    user_id = int(payload.get("sub"))
+    employer_id = payload.get("employer_id")
+    if not ((user_role == "Merchant" and user_id == merchant_id) or (user_role == "Staff" and employer_id == merchant_id)):
+        raise HTTPException(status_code=403, detail="Not authorized to view this restaurant's stats")
+    db = SessionLocal()
+    try:
+        condition = (Order.restaurant_id == restaurant_id)
+        return calculate_stats(db, condition)
+    finally:
+        db.close()
 
-@app.get("/analytics/merchant/{res_id}")
-def get_merchant_stats(res_id: str):
-    return merchant_stats.get(res_id, {"orders": 0, "revenue": 0.0})
+@app.get("/analytics/merchant/{merchant_id}")
+def get_merchant_aggregated_stats(merchant_id: int, payload: dict = Depends(verify_token)):
+    """Only the merchant themselves can view their aggregated stats"""
+    user_id = int(payload.get("sub"))
+    user_role = payload.get("role")
+    if not (user_role == "Merchant" and user_id == merchant_id):
+        raise HTTPException(status_code=403, detail="Not authorized to view this merchant's stats")
+    db = SessionLocal()
+    try:
+        res = requests.get(f"http://localhost:8002/restaurants/merchant/{merchant_id}", timeout=2)
+        res.raise_for_status()
+        restaurants = res.json()
+        res_ids = [r["id"] for r in restaurants]
+        if not res_ids:
+            return {"total_orders_completed": 0, "earnings": {"lifetime": 0, "today": 0, "yesterday": 0, "this_week": 0, "this_month": 0, "this_year": 0}}
+        condition = Order.restaurant_id.in_(res_ids)
+        return calculate_stats(db, condition)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Could not fetch restaurants for this merchant.")
+    finally:
+        db.close()
 
 @app.get("/analytics/rider/{rider_id}")
-def get_rider_stats(rider_id: str):
-    return rider_stats.get(rider_id, {"deliveries": 0, "earnings": 0.0})
+def get_rider_stats(rider_id: int, payload: dict = Depends(verify_token)):
+    """Only the rider themselves can view their stats"""
+    user_id = int(payload.get("sub"))
+    if user_id != rider_id:
+        raise HTTPException(status_code=403, detail="Not authorized to view this rider's stats")
+    db = SessionLocal()
+    try:
+        condition = (Order.rider_id == rider_id)
+        return calculate_stats(db, condition, is_rider=True)
+    finally:
+        db.close()
