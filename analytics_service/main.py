@@ -1,13 +1,16 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, and_
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy import and_
+from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import requests
 import jwt
 import redis
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+# --- IMPORTS FROM MODULAR FILES ---
+from database import engine, get_db, Base, SessionLocal
+from models import Order
 
 app = FastAPI(title="PuneFood Analytics & Dashboard Service")
 
@@ -23,6 +26,9 @@ SECRET_KEY = "pune_food_super_secret"
 ALGORITHM = "HS256"
 security = HTTPBearer()
 
+# Create Tables (though usually Order Service creates it, safe to keep)
+Base.metadata.create_all(bind=engine)
+
 # --- 🔴 REDIS SETUP (for token blacklist) ---
 try:
     redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
@@ -31,29 +37,6 @@ try:
 except Exception as e:
     print(f"⚠️ Redis not available: {e}")
     redis_client = None
-
-# --- 🐘 DATABASE SETUP (Connecting to Order DB directly) ---
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:1234@localhost:5432/order_db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-class Order(Base):
-    __tablename__ = "orders"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, index=True)
-    restaurant_id = Column(Integer, index=True)
-    rider_id = Column(Integer, index=True, nullable=True)
-    total_amount = Column(Float)
-    status = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 # --- 🛡️ TOKEN VERIFIER (with Redis blacklist) ---
 def verify_token(token: HTTPAuthorizationCredentials = Depends(security)):

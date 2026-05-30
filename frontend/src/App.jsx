@@ -43,17 +43,20 @@ function App() {
   const [selectedOrderDetails, setSelectedOrderDetails] = useState(null); 
   
   const [merchantOrders, setMerchantOrders] = useState([]);
-  const [merchantStats, setMerchantStats] = useState({ orders: 0, revenue: 0, earnings: { today: 0, this_week: 0, this_month: 0, this_year: 0, lifetime: 0 } });
+  const [merchantStats, setMerchantStats] = useState({ total_orders_completed: 0, earnings: { today: 0, this_week: 0, this_month: 0, this_year: 0, lifetime: 0 } });
   
   // Merchant Modal States
   const [merchantSelectedOrder, setMerchantSelectedOrder] = useState(null);
   const [showEditRestaurantModal, setShowEditRestaurantModal] = useState(false);
   const [editRestData, setEditRestData] = useState({ address: '', phone_number: '' });
 
-  // Merchant History Filters
+  // History Filters
   const [merchantHistoryFilter, setMerchantHistoryFilter] = useState('today');
   const [merchantHistoryPage, setMerchantHistoryPage] = useState(1);
   const [merchantCustomDateRange, setMerchantCustomDateRange] = useState({ start: '', end: '' });
+  
+  // Customer History Filter
+  const [customerHistoryFilter, setCustomerHistoryFilter] = useState('all');
 
   const [availableOrders, setAvailableOrders] = useState([]);
   const [myRiderOrders, setMyRiderOrders] = useState([]);
@@ -117,7 +120,7 @@ function App() {
   const activeOrders = orders.filter(o => !['Delivered', 'Cancelled', 'Cancelled_by_Merchant'].includes(o.status));
   const pastOrders = orders.filter(o => ['Delivered', 'Cancelled', 'Cancelled_by_Merchant'].includes(o.status));
 
-  // Date Filtering Helpers for Merchant History
+  // Date Filtering Helpers
   const isToday = (dateStr) => new Date().toDateString() === new Date(dateStr).toDateString();
   const isYesterday = (dateStr) => {
     const y = new Date();
@@ -135,6 +138,14 @@ function App() {
     const now = new Date();
     return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   };
+
+  // Filtered Customer Orders
+  const filteredPastOrders = pastOrders.filter(o => {
+    if (customerHistoryFilter === 'today') return isToday(o.created_at);
+    if (customerHistoryFilter === 'week') return isThisWeek(o.created_at);
+    if (customerHistoryFilter === 'month') return isThisMonth(o.created_at);
+    return true;
+  });
 
   const completedMerchantOrders = merchantOrders.filter(o => ['Delivered', 'Cancelled', 'Cancelled_by_Merchant'].includes(o.status));
   const filteredCompletedMerchantOrders = completedMerchantOrders.filter(o => {
@@ -458,6 +469,15 @@ function App() {
         socket.onmessage = (e) => {
             const msg = e.data;
             if(msg === "REFRESH_DATA" || msg === "REFRESH_MENU") { refreshData(); return; }
+            
+            // NAYA SIGNAL: Sirf restaurant change hua hai, ban nahi laga
+            if(msg === "STAFF_TRANSFERRED" && userRole === 'staff') {
+                showToast("Restaurant transferred successfully! Loading new dashboard...", "success");
+                refreshData();
+                return;
+            }
+
+            // PURANA SIGNAL: Agar sach mein remove kiya gaya hai toh logout karo
             if(msg === "STAFF_REVOKED" && userRole === 'staff') {
                 showToast("Your access has been revoked. You will be logged out.", "error");
                 setTimeout(handleLogout, 2000);
@@ -675,7 +695,6 @@ function App() {
       showToast("Order placed successfully!", "success");
     } catch (err) {
       setIsPaying(false);
-      // DYNAMIC ERROR HANDLING
       if (err.response?.status === 429) {
           showToast("Restaurant is busy. Queue is full! Try again later.", "error");
       } else if (err.response?.status === 400) {
@@ -743,7 +762,6 @@ function App() {
     }
   };
 
-  // MERCHANT RESTAURANT PROFILE UPDATE
   const handleUpdateRestaurantProfile = async () => {
       try {
           await axios.patch(`http://localhost:8002/restaurants/${merchantResId}/settings`, {
@@ -758,7 +776,6 @@ function App() {
       }
   };
 
-  // RIDER PROFILE UPDATE
   const handleUpdateRiderProfile = async () => {
        try {
            await axios.put(`http://localhost:8001/users/${userId}/profile`, riderProfileData);
@@ -1230,9 +1247,10 @@ function App() {
                       : (merchantStats.earnings?.today || 0).toFixed(2)
                     }
                   </h1>
-                  <p style={{margin:0, fontWeight:'bold'}}>
-                    {userRole === 'merchant' ? (merchantStats.orders || 0) : (merchantStats.total_orders_completed || 0)} Orders Completed
+                  <p style={{margin:0, fontWeight:'bold', display:'flex', alignItems:'center', gap:'8px', background:'rgba(255,255,255,0.2)', padding:'6px 12px', borderRadius:'10px', display:'inline-block'}}>
+                    ✅ {merchantStats.total_orders_completed || 0} Orders Completed
                   </p>
+                  {userRole === 'merchant' && <p style={{margin:'10px 0 0 0', fontSize:'13px', opacity:0.8}}>Viewing stats for: {analyticsTimeFilter}</p>}
                 </div>
                 <div style={{ flex: 1, background: 'white', padding: '30px', borderRadius: '25px', border: '1px solid #e2e8f0', display:'flex', flexDirection:'column', justifyContent:'center' }}>
                   <h3 style={{margin:0, color:'#374151'}}>{userRole === 'merchant' ? 'Merchant Console' : 'Staff Dashboard'} 👨‍🍳</h3>
@@ -1243,10 +1261,10 @@ function App() {
               
               {/* Analytics Filters – only for merchant */}
               {userRole === 'merchant' && (
-                <div style={{ background: 'white', padding: '20px', borderRadius: '20px', marginBottom: '20px', display: 'flex', gap: '20px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ background: 'white', padding: '20px', borderRadius: '20px', marginBottom: '20px', display: 'flex', gap: '20px', alignItems: 'center', flexWrap: 'wrap', boxShadow: '0 4px 12px rgba(0,0,0,0.02)' }}>
                   <div>
-                    <label style={{ fontWeight: 'bold', marginRight: '10px' }}>Time Period:</label>
-                    <select value={analyticsTimeFilter} onChange={(e) => setAnalyticsTimeFilter(e.target.value)} style={{ padding: '8px 15px', borderRadius: '10px', border: '1px solid #ddd' }}>
+                    <label style={{ fontWeight: 'bold', marginRight: '10px', color: '#4b5563' }}>Time Period:</label>
+                    <select value={analyticsTimeFilter} onChange={(e) => setAnalyticsTimeFilter(e.target.value)} style={{ padding: '8px 15px', borderRadius: '10px', border: '1px solid #ddd', background: '#f8fafc', fontWeight: 'bold' }}>
                       <option value="today">Today</option>
                       <option value="week">This Week</option>
                       <option value="month">This Month</option>
@@ -1255,8 +1273,8 @@ function App() {
                     </select>
                   </div>
                   <div>
-                    <label style={{ fontWeight: 'bold', marginRight: '10px' }}>View:</label>
-                    <select value={analyticsPerRestaurantId} onChange={(e) => setAnalyticsPerRestaurantId(e.target.value)} style={{ padding: '8px 15px', borderRadius: '10px', border: '1px solid #ddd' }}>
+                    <label style={{ fontWeight: 'bold', marginRight: '10px', color: '#4b5563' }}>View:</label>
+                    <select value={analyticsPerRestaurantId} onChange={(e) => setAnalyticsPerRestaurantId(e.target.value)} style={{ padding: '8px 15px', borderRadius: '10px', border: '1px solid #ddd', background: '#f8fafc', fontWeight: 'bold' }}>
                       <option value="">All Restaurants (Combined)</option>
                       {myRestaurants.map(r => (
                         <option key={r.id} value={r.id}>{r.name}</option>
@@ -1267,10 +1285,18 @@ function App() {
               )}
               
               {userRole === 'merchant' && analyticsPerRestaurantId && perRestaurantStats[analyticsPerRestaurantId] && (
-                <div style={{ background: '#f8fafc', padding: '20px', borderRadius: '20px', marginBottom: '20px' }}>
-                  <h4>{myRestaurants.find(r => r.id.toString() === analyticsPerRestaurantId)?.name} - Analytics</h4>
-                  <p>Orders: {perRestaurantStats[analyticsPerRestaurantId].total_orders_completed || 0}</p>
-                  <p>Revenue: ₹{getEarningsByFilter(perRestaurantStats[analyticsPerRestaurantId], analyticsTimeFilter).toFixed(2)}</p>
+                <div style={{ background: '#f8fafc', padding: '20px', borderRadius: '20px', marginBottom: '20px', border: '1px solid #e2e8f0' }}>
+                  <h4 style={{ margin: '0 0 10px 0', color: '#1e40af' }}>{myRestaurants.find(r => r.id.toString() === analyticsPerRestaurantId)?.name} - Detailed Analytics</h4>
+                  <div style={{ display: 'flex', gap: '20px' }}>
+                      <div style={{ flex: 1, background: 'white', padding: '15px', borderRadius: '12px', border: '1px solid #ddd' }}>
+                          <p style={{ margin: '0 0 5px 0', color: '#6b7280', fontSize: '13px' }}>Completed Orders</p>
+                          <h2 style={{ margin: 0, color: '#111827' }}>{perRestaurantStats[analyticsPerRestaurantId].total_orders_completed || 0}</h2>
+                      </div>
+                      <div style={{ flex: 1, background: 'white', padding: '15px', borderRadius: '12px', border: '1px solid #ddd' }}>
+                          <p style={{ margin: '0 0 5px 0', color: '#6b7280', fontSize: '13px' }}>Revenue ({analyticsTimeFilter})</p>
+                          <h2 style={{ margin: 0, color: '#10b981' }}>₹{getEarningsByFilter(perRestaurantStats[analyticsPerRestaurantId], analyticsTimeFilter).toFixed(2)}</h2>
+                      </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -1858,10 +1884,20 @@ function App() {
             </div>
           )
         )}
+        
         {userRole === 'customer' && view === 'orders' && (
           <div style={{ maxWidth: '850px', margin: '0 auto', background: 'white', padding: '45px', borderRadius: '30px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)' }}>
-            <h2 style={{borderBottom:'2px solid #f3f4f6', paddingBottom:'20px', marginBottom:'30px', color:'#111827', display:'flex', alignItems:'center', gap:'10px'}}><Receipt size={28}/> Order History & Receipts</h2>
-            {pastOrders.length === 0 ? <p style={{textAlign:'center', color:'#9ca3af', padding:'40px 0'}}>No past orders found.</p> : [...pastOrders].reverse().map(o => (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom:'2px solid #f3f4f6', paddingBottom:'20px', marginBottom:'30px', flexWrap: 'wrap', gap: '15px' }}>
+              <h2 style={{margin: 0, color:'#111827', display:'flex', alignItems:'center', gap:'10px'}}><Receipt size={28}/> Order History & Receipts</h2>
+              <select value={customerHistoryFilter} onChange={e => setCustomerHistoryFilter(e.target.value)} style={{ padding: '8px 15px', borderRadius: '10px', border: '1px solid #ddd', background: '#f8fafc', fontWeight: 'bold', cursor: 'pointer' }}>
+                <option value="all">All Time</option>
+                <option value="today">Today</option>
+                <option value="week">This Week</option>
+                <option value="month">This Month</option>
+              </select>
+            </div>
+
+            {filteredPastOrders.length === 0 ? <p style={{textAlign:'center', color:'#9ca3af', padding:'40px 0'}}>No past orders found.</p> : [...filteredPastOrders].reverse().map(o => (
                 <div key={o.id} style={{ border: '1px solid #e5e7eb', borderRadius: '20px', padding: '25px', marginBottom: '25px', background:'#fdfdfd' }}>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', borderBottom:'1px dashed #d1d5db', paddingBottom:'15px', marginBottom:'15px' }}>
                         <div>
@@ -1880,14 +1916,18 @@ function App() {
                         <p style={{margin:'0 0 8px 0', color:'#4b5563', fontSize:'14px'}}><b>Delivered To:</b> {o.address?.substring(0, 40)}...</p>
                         <p style={{margin:0, color:'#4b5563', fontSize:'14px'}}><b>Paid via:</b> {o.payment_method || 'Wallet'}</p>
                     </div>
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap: 'wrap', gap: '15px' }}>
                         <div style={{fontSize:'22px', fontWeight:'900', color:'#111827'}}>Total: ₹{o.total_amount}</div>
-                        <button onClick={() => { setCart([{name: "Reorder Item", price: o.total_amount-40, quantity: 1, restaurantId: o.restaurant_id, restaurantName: o.restaurant_name}]); setIsCartOpen(true); setView('home'); }} style={{background:'#fef2f2', color:'#be123c', border:'1px solid #be123c', padding:'10px 20px', borderRadius:'14px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'8px', cursor:'pointer'}}><RotateCcw size={18}/> Reorder</button>
+                        <div style={{ display: 'flex', gap: '10px' }}>
+                            <button onClick={() => setSelectedOrderDetails(o)} style={{ background: '#f8fafc', color: '#374151', border: '1px solid #cbd5e1', padding: '10px 15px', borderRadius: '14px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}><Eye size={18}/> View Receipt</button>
+                            <button onClick={() => { setCart([{name: "Reorder Item", price: o.total_amount-40, quantity: 1, restaurantId: o.restaurant_id, restaurantName: o.restaurant_name}]); setIsCartOpen(true); setView('home'); }} style={{background:'#fef2f2', color:'#be123c', border:'1px solid #be123c', padding:'10px 20px', borderRadius:'14px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'8px', cursor:'pointer'}}><RotateCcw size={18}/> Reorder</button>
+                        </div>
                     </div>
                 </div>
             ))}
           </div>
         )}
+
         {userRole === 'customer' && view === 'addresses' && (
           <div style={{ maxWidth: '800px', margin: '0 auto', background: 'white', padding: '35px', borderRadius: '25px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)' }}>
             <h2 style={{ marginTop: 0, borderBottom: '2px solid #f3f4f6', paddingBottom: '15px' }}>My Saved Addresses 📍</h2>
@@ -1945,12 +1985,12 @@ function App() {
         </div>
       )}
 
-      {/* Order Details Tracking Modal (Customer) */}
+      {/* Order Details Tracking / Receipt Modal (Customer) */}
       {selectedOrderDetails && (
           <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.7)', zIndex: 3000, display: 'flex', justifyContent: 'center', alignItems: 'center' }} onClick={() => setSelectedOrderDetails(null)}>
             <div style={{ background: 'white', padding: '30px', borderRadius: '20px', width: '90%', maxWidth: '500px', position: 'relative' }} onClick={e => e.stopPropagation()}>
                 <button onClick={() => setSelectedOrderDetails(null)} style={{ position: 'absolute', top: '15px', right: '15px', background: '#f3f4f6', border: 'none', borderRadius: '50%', width: '35px', height: '35px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={20}/></button>
-                <h2 style={{ marginTop: 0, borderBottom: '1px solid #ddd', paddingBottom: '15px' }}>Order Details</h2>
+                <h2 style={{ marginTop: 0, borderBottom: '1px solid #ddd', paddingBottom: '15px' }}>Order Receipt</h2>
                 
                 <div style={{ marginBottom: '15px' }}>
                     <p style={{ margin: '5px 0' }}><strong>Order ID:</strong> #{selectedOrderDetails.id}</p>
@@ -1973,11 +2013,12 @@ function App() {
                 </div>
 
                 <div style={{ borderTop: '1px dashed #ddd', paddingTop: '15px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}><span>Item Total (Approx)</span><span>₹{selectedOrderDetails.total_amount - 40}</span></div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}><span>Delivery Fee</span><span>₹40</span></div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}><span>Base Price</span><span>₹{(selectedOrderDetails.total_amount - 40).toFixed(2)}</span></div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}><span>Delivery Fee</span><span>₹40.00</span></div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}><span>Taxes & Charges</span><span>₹0.00</span></div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '18px', marginTop: '10px' }}>
                         <span>Total Paid ({selectedOrderDetails.payment_method})</span>
-                        <span style={{ color: '#be123c' }}>₹{selectedOrderDetails.total_amount}</span>
+                        <span style={{ color: '#be123c' }}>₹{selectedOrderDetails.total_amount.toFixed(2)}</span>
                     </div>
                 </div>
             </div>
@@ -2098,7 +2139,7 @@ function App() {
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.7)', zIndex: 3000, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
           <div style={{ background: 'white', padding: '30px', borderRadius: '20px', width: '320px', textAlign: 'center' }}>
             <h3>Enter {otpModal.type === 'pickup' ? 'Pickup' : 'Delivery'} OTP</h3>
-            <input type="text" maxLength="6" placeholder="6-digit OTP" value={otpInputValue} onChange={e => setOtpInputValue(e.target.value)} style={{ width: '100%', padding: '10px', margin: '15px 0', fontSize: '20px', textAlign: 'center', borderRadius: '8px', border: '1px solid #ccc' }} />
+            <input type="text" maxLength="4" placeholder="4-digit OTP" value={otpInputValue} onChange={e => setOtpInputValue(e.target.value)} style={{ width: '100%', padding: '10px', margin: '15px 0', fontSize: '20px', textAlign: 'center', borderRadius: '8px', border: '1px solid #ccc' }} />
             <div style={{ display: 'flex', gap: '10px' }}>
               <button onClick={async () => {
                 try {

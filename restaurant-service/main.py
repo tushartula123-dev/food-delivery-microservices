@@ -1,10 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session, relationship
-from pydantic import BaseModel
+from sqlalchemy.orm import Session
 import redis
 import json
 import requests
@@ -13,8 +10,15 @@ import os
 import shutil
 import uuid
 from datetime import datetime
-
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+# --- IMPORTS FROM MODULAR FILES ---
+from database import engine, get_db, Base
+from models import Restaurant, MenuItem
+from schemas import (
+    RestaurantCreate, RestaurantSettingsUpdate, CapacityUpdate,
+    MenuItemCreate, MenuItemUpdate
+)
 
 app = FastAPI(title="Independent Restaurant Service")
 
@@ -30,11 +34,8 @@ security = HTTPBearer()
 SECRET_KEY = "pune_food_super_secret"  
 ALGORITHM = "HS256"
 
-# --- 🐘 DATABASE SETUP ---
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:1234@localhost:5432/restaurant_db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+# Create Tables
+Base.metadata.create_all(bind=engine)
 
 # --- 🔴 REDIS SETUP ---
 try:
@@ -49,11 +50,6 @@ UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
-def get_db():
-    db = SessionLocal()
-    try: yield db
-    finally: db.close()
-
 # --- 🛡️ TOKEN VERIFIER ---
 def verify_token(token: HTTPAuthorizationCredentials = Depends(security)):
     try:
@@ -64,69 +60,6 @@ def verify_token(token: HTTPAuthorizationCredentials = Depends(security)):
         return payload 
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid or Expired Token")
-
-# --- 🗄️ MODELS ---
-class Restaurant(Base):
-    __tablename__ = "restaurants"
-    id = Column(Integer, primary_key=True, index=True)
-    merchant_id = Column(Integer, index=True)
-    name = Column(String, index=True)
-    address = Column(String)
-    phone_number = Column(String, nullable=True) # NEW FIELD
-    is_open = Column(Boolean, default=True)          
-    auto_accept = Column(Boolean, default=False)
-    max_active_orders = Column(Integer, default=10)
-    max_queue_length = Column(Integer, default=5)
-
-class MenuItem(Base):
-    __tablename__ = "menu_items"
-    id = Column(Integer, primary_key=True, index=True)
-    restaurant_id = Column(Integer, index=True)
-    name = Column(String)
-    price = Column(Float)
-    description = Column(String, nullable=True)
-    is_available = Column(Boolean, default=True)    
-    image_url = Column(String, nullable=True)
-    is_veg = Column(Boolean, default=True)
-    max_active_orders = Column(Integer, nullable=True)
-    max_queue_length = Column(Integer, nullable=True)
-
-Base.metadata.create_all(bind=engine)
-
-# --- 📝 SCHEMAS ---
-class RestaurantCreate(BaseModel):
-    merchant_id: int
-    name: str
-    address: str
-    phone_number: str | None = None # NEW FIELD
-
-class RestaurantSettingsUpdate(BaseModel):
-    is_open: bool | None = None
-    auto_accept: bool | None = None
-    address: str | None = None       # NEW FIELD
-    phone_number: str | None = None  # NEW FIELD
-
-class CapacityUpdate(BaseModel):
-    max_active_orders: int | None = None
-    max_queue_length: int | None = None
-
-class MenuItemCreate(BaseModel):
-    name: str
-    price: float
-    description: str | None = None
-    is_available: bool = True
-    image_url: str | None = None
-    is_veg: bool = True
-
-class MenuItemUpdate(BaseModel):
-    name: str | None = None
-    price: float | None = None
-    is_veg: bool | None = None
-    is_available: bool | None = None        
-    image_url: str | None = None 
-    description: str | None = None
-    max_active_orders: int | None = None
-    max_queue_length: int | None = None
 
 # --- Helper to broadcast menu refresh ---
 def broadcast_menu_refresh():
@@ -354,8 +287,6 @@ def update_restaurant_settings(restaurant_id: int, settings: RestaurantSettingsU
     if user_role == "Merchant" and user_id == restaurant.merchant_id:
         is_authorized = True
     elif user_role == "Staff" and employer_id == restaurant.merchant_id:
-        # Note: Depending on logic, staff shouldn't update settings like phone/address.
-        # So we can restrict address/phone update to Merchant only.
         is_authorized = True
         
     if not is_authorized:

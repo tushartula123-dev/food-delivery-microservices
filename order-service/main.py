@@ -1,9 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session, relationship
-from pydantic import BaseModel
+from sqlalchemy.orm import Session
 from datetime import datetime
 import json
 import requests
@@ -14,6 +11,11 @@ import redis
 import asyncio
 import jwt
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+# --- IMPORTS FROM MODULAR FILES ---
+from database import engine, get_db, Base
+from models import Order, OrderItem
+from schemas import OrderCreatePayload, CartItemInput
 
 # --- 🚀 FASTAPI APP SETUP ---
 app = FastAPI(title="Order Service")
@@ -30,60 +32,8 @@ security = HTTPBearer()
 SECRET_KEY = "pune_food_super_secret"
 ALGORITHM = "HS256"
 
-# --- 🐘 DATABASE SETUP ---
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:1234@localhost:5432/order_db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# --- 🗄️ DATABASE MODELS ---
-class Order(Base):
-    __tablename__ = "orders"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, index=True)
-    restaurant_id = Column(Integer, index=True)
-    merchant_id = Column(Integer, index=True)
-    rider_id = Column(Integer, index=True, nullable=True)
-    total_amount = Column(Float)
-    status = Column(String, default="Pending_Acceptance")
-    address = Column(String, nullable=True)
-    items_summary = Column(String, nullable=True) 
-    special_instructions = Column(String, nullable=True) 
-    payment_method = Column(String, default="Wallet") 
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-class OrderItem(Base):
-    __tablename__ = "order_items"
-    id = Column(Integer, primary_key=True, index=True)
-    order_id = Column(Integer, ForeignKey("orders.id"))
-    menu_item_id = Column(Integer, index=True)
-    quantity = Column(Integer, default=1)
-
+# Create Tables
 Base.metadata.create_all(bind=engine)
-
-# --- 📝 SCHEMAS ---
-class CartItemInput(BaseModel):
-    item_id: int
-    quantity: int
-
-class OrderCreatePayload(BaseModel):
-    user_id: int
-    restaurant_id: int
-    merchant_id: int
-    total_amount: float
-    address: str
-    items_summary: str = "Standard Meal"
-    special_instructions: str = ""
-    payment_method: str = "Wallet"
-    item_ids: List[int] = []
-    cart_items: List[CartItemInput] = [] # Proper Quantity Support
 
 # --- 📡 WEBSOCKET MANAGER ---
 class ConnectionManager:
@@ -178,7 +128,6 @@ def get_item_capacity(item_id: int):
     return None, None
 
 def check_availability_for_new_order(item_counts: dict):
-    """Checks if items have space in their ACTIVE + QUEUE limits, strictly checking requested quantity"""
     item_errors = []
     if not redis_client: return item_errors
     
@@ -194,12 +143,11 @@ def check_availability_for_new_order(item_counts: dict):
     return item_errors
 
 def release_active_slots(restaurant_id: int, order_id: int, db: Session):
-    """Releases ACTIVE slots scaling by quantity"""
     if not redis_client: return
     active_key = f"res:{restaurant_id}:active_count"
     current_active = int(redis_client.get(active_key) or 0)
     if current_active > 0:
-        redis_client.decr(active_key) # Restaurant tracks Orders, so decrement by 1
+        redis_client.decr(active_key)
     
     order_items = db.query(OrderItem).filter(OrderItem.order_id == order_id).all()
     for oi in order_items:
@@ -208,13 +156,11 @@ def release_active_slots(restaurant_id: int, order_id: int, db: Session):
         if curr_item_act >= oi.quantity:
             redis_client.decrby(item_active_key, oi.quantity)
         else:
-            redis_client.set(item_active_key, 0) # Fallback safety
+            redis_client.set(item_active_key, 0)
     
-    # Try to promote the queue now that space is free
     promote_restaurant_queue(restaurant_id, db)
 
 def release_queue_slots(restaurant_id: int, order_id: int, db: Session):
-    """Releases QUEUE slots cleanly scaling by quantity"""
     if not redis_client: return
     queue_key = f"res:{restaurant_id}:queue"
     redis_client.lrem(queue_key, 0, order_id)
@@ -229,7 +175,6 @@ def release_queue_slots(restaurant_id: int, order_id: int, db: Session):
             redis_client.set(item_q_key, 0)
 
 def promote_restaurant_queue(restaurant_id: int, db: Session):
-    """Promotes order from queue only if BOTH restaurant and ALL items have required slots"""
     if not redis_client: return
     queue_key = f"res:{restaurant_id}:queue"
     active_key = f"res:{restaurant_id}:active_count"
@@ -238,17 +183,16 @@ def promote_restaurant_queue(restaurant_id: int, db: Session):
     while (int(redis_client.get(active_key) or 0)) < max_active:
         next_order_id_bytes = redis_client.lindex(queue_key, 0)
         if not next_order_id_bytes:
-            break # Queue is empty
+            break
         
         order_id = int(next_order_id_bytes)
         order = db.query(Order).filter(Order.id == order_id).first()
         if not order or order.status != "Queued":
-            redis_client.lpop(queue_key) # Clean ghost orders
+            redis_client.lpop(queue_key)
             continue
 
         order_items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
         
-        # Check if requested quantities for ALL items fit in the active slots
         can_accept = True
         for oi in order_items:
             max_act, _ = get_item_capacity(oi.menu_item_id)
@@ -259,9 +203,8 @@ def promote_restaurant_queue(restaurant_id: int, db: Session):
                     break
         
         if not can_accept:
-            break # Block queue processing until dish station is fully free
+            break
 
-        # Everything is clear, PROMOTE!
         redis_client.lpop(queue_key)
         redis_client.incr(active_key)
         
@@ -309,6 +252,12 @@ async def broadcast_revoke_staff(staff_id: int):
     await manager.broadcast("STAFF_REVOKED", f"staff_{staff_id}")
     return {"ok": True}
 
+# NEW: Broadcast for Staff Transfer
+@app.post("/broadcast/transfer-staff")
+async def broadcast_transfer_staff(staff_id: int):
+    await manager.broadcast("STAFF_TRANSFERRED", f"staff_{staff_id}")
+    return {"ok": True}
+
 # --- 🆕 BROADCAST REFRESH MENU ---
 @app.post("/broadcast/refresh-menu")
 async def broadcast_refresh_menu():
@@ -328,13 +277,11 @@ async def create_order(order: OrderCreatePayload, request: Request, db: Session 
     if int(payload.get("sub")) != order.user_id:
         raise HTTPException(status_code=403, detail="Token user mismatch")
     
-    # Calculate accurate Item Counts based on Quantity
     item_counts = {}
     if order.cart_items:
         for ci in order.cart_items:
             item_counts[ci.item_id] = item_counts.get(ci.item_id, 0) + ci.quantity
     else:
-        # Fallback if frontend cart_items is missing
         for item_id in order.item_ids:
             item_counts[item_id] = item_counts.get(item_id, 0) + 1
 
@@ -345,21 +292,17 @@ async def create_order(order: OrderCreatePayload, request: Request, db: Session 
     active_count = int(redis_client.get(active_key) or 0)
     queue_count = redis_client.llen(queue_key)
     
-    # 1. Reject if restaurant itself is completely full
     if active_count >= max_active and queue_count >= max_queue:
         raise HTTPException(status_code=429, detail="Restaurant is experiencing high volume. Cannot accept orders right now.")
     
-    # 2. Reject if any item is out of stock considering requested quantities
     item_errors = check_availability_for_new_order(item_counts)
     if item_errors:
         raise HTTPException(status_code=400, detail="; ".join(item_errors))
     
-    # 3. Determine if this order should go to Queue
     is_queued = False
     if active_count >= max_active:
         is_queued = True
     else:
-        # Check if all quantities fit in the currently active slots for the items
         for item_id, req_qty in item_counts.items():
             max_act, _ = get_item_capacity(item_id)
             if max_act is not None:
@@ -422,7 +365,6 @@ async def create_order(order: OrderCreatePayload, request: Request, db: Session 
     delivery_otp = generate_otp()
     store_delivery_otp(new_order.id, delivery_otp)
     
-    # Safely apply updates to Redis tracking correctly by quantity
     if initial_status == "Queued":
         redis_client.rpush(queue_key, new_order.id)
         for item_id, qty in item_counts.items():

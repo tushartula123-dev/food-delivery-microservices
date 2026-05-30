@@ -23,4 +23,5 @@ kafka_2.13-3.7.0/
 
 # SQLite/Local DBs
 *.db
-# Note: Humne .sql files ko deliberately ignore nahi kiya hai taaki DB dumps push ho sakein.
+# Note: Humne .sql files ko deliberately ignore nahi kiya hai taaki DB dumps push ho sakein.kafka_2.13-3.7.0.tgz
+kafka_2.13-3.7.0.tgz

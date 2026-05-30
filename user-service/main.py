@@ -1,10 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, Float
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
-from pydantic import BaseModel
-from enum import Enum
+from sqlalchemy.orm import Session
 import jwt
 import datetime
 import bcrypt
@@ -14,12 +10,13 @@ import redis
 import requests
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-# --- 🗄️ DATABASE SETUP (POSTGRESQL) ---
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:1234@localhost:5432/user_db"
-
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+# --- IMPORTS FROM MODULAR FILES ---
+from database import engine, get_db, Base
+from models import User, AddressBook
+from schemas import (
+    UserRegister, StaffRegister, StaffUpdate, UserLogin, 
+    WalletUpdate, AddressCreate, UserProfileUpdate, RoleType
+)
 
 # --- 🔴 REDIS SETUP ---
 try:
@@ -36,35 +33,11 @@ ALGORITHM = "HS256"
 
 security = HTTPBearer()
 
-# --- 🏗️ DB MODELS ---
-class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String)
-    email = Column(String, unique=True, index=True)
-    password = Column(String) 
-    role = Column(String) 
-    wallet_balance = Column(Float, default=0.0)
-    phone_number = Column(String, nullable=False, unique=True)
-    vehicle_number = Column(String, nullable=True)
-    employer_id = Column(Integer, nullable=True)
-    restaurant_id = Column(Integer, nullable=True)
-
-class AddressBook(Base):
-    __tablename__ = "address_book"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, index=True)
-    address_text = Column(String)
-
+# Create Tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="User & Auth Service")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
-def get_db():
-    db = SessionLocal()
-    try: yield db
-    finally: db.close()
 
 # --- 🎧 KAFKA CONSUMER ---
 kafka_consumer = None
@@ -74,6 +47,8 @@ def start_kafka_consumer():
     print("🚀 Background Kafka Consumer Started in User Service!")
     try:
         from kafka import KafkaConsumer
+        from database import SessionLocal
+        
         kafka_consumer = KafkaConsumer(
             'food_delivery_orders',
             bootstrap_servers=['localhost:9092'],
@@ -145,57 +120,19 @@ def verify_user_token(token: HTTPAuthorizationCredentials = Depends(security)):
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Asli Token laao bhai, ye fake hai!")
 
-# --- 🔒 ROLE ENUMERATION ---
-class RoleType(str, Enum):
-    customer = "Customer"
-    merchant = "Merchant"
-    rider = "Rider"
-    staff = "Staff" 
-
-# --- 📝 SCHEMAS ---
-class UserRegister(BaseModel):
-    name: str
-    email: str
-    password: str
-    role: RoleType  
-    phone_number: str
-    vehicle_number: str | None = None
-
-class StaffRegister(BaseModel):
-    name: str
-    email: str
-    password: str
-    phone_number: str
-    restaurant_id: int
-
-class StaffUpdate(BaseModel):
-    name: str | None = None
-    email: str | None = None
-    password: str | None = None
-    phone_number: str | None = None
-    restaurant_id: int | None = None
-
-class UserLogin(BaseModel):
-    email: str
-    password: str
-
-class WalletUpdate(BaseModel):
-    amount: float
-
-class AddressCreate(BaseModel):
-    address: str
-
-# NEW: Profile update schema for Rider (and others)
-class UserProfileUpdate(BaseModel):
-    phone_number: str | None = None
-    vehicle_number: str | None = None
-
-# --- Helper for instant revocation ---
+# --- Helpers for Signals ---
 def notify_staff_revoked(staff_id: int):
     try:
         requests.post(f"http://localhost:8003/broadcast/revoke-staff?staff_id={staff_id}", timeout=1)
     except Exception as e:
-        print(f"Failed to notify order service: {e}")
+        print(f"Failed to notify order service (Revoke): {e}")
+
+# NEW: Helper for transfer (does not ban user)
+def notify_staff_transferred(staff_id: int):
+    try:
+        requests.post(f"http://localhost:8003/broadcast/transfer-staff?staff_id={staff_id}", timeout=1)
+    except Exception as e:
+        print(f"Failed to notify order service (Transfer): {e}")
 
 # --- 🚀 AUTHENTICATION APIS ---
 @app.post("/register")
@@ -271,7 +208,6 @@ def get_user(user_id: int, db: Session = Depends(get_db), payload: dict = Depend
         "employer_id": user.employer_id,
         "restaurant_id": user.restaurant_id
     }
-    # Exposing phone and vehicle number to orders and frontend
     user_data["email"] = user.email
     user_data["phone_number"] = user.phone_number
     user_data["vehicle_number"] = user.vehicle_number
@@ -280,7 +216,6 @@ def get_user(user_id: int, db: Session = Depends(get_db), payload: dict = Depend
         user_data["wallet_balance"] = user.wallet_balance
     return user_data
 
-# NEW: Update Profile API (For Rider's Phone and Vehicle Number)
 @app.put("/users/{user_id}/profile")
 def update_user_profile(user_id: int, profile: UserProfileUpdate, db: Session = Depends(get_db), payload: dict = Depends(verify_user_token)):
     if int(payload.get("sub")) != user_id:
@@ -410,6 +345,9 @@ def update_merchant_staff(merchant_id: int, staff_id: int, staff_data: StaffUpda
     staff = db.query(User).filter(User.id == staff_id, User.employer_id == merchant_id).first()
     if not staff:
         raise HTTPException(status_code=404, detail="Staff member not found.")
+    
+    old_restaurant_id = staff.restaurant_id
+
     if staff_data.name is not None:
         staff.name = staff_data.name
     if staff_data.email is not None:
@@ -422,14 +360,15 @@ def update_merchant_staff(merchant_id: int, staff_id: int, staff_data: StaffUpda
         staff.password = hashed.decode('utf-8')
     if staff_data.phone_number is not None:
         staff.phone_number = staff_data.phone_number.strip()
-    old_restaurant_id = staff.restaurant_id
     if staff_data.restaurant_id is not None:
         staff.restaurant_id = staff_data.restaurant_id
+    
     db.commit()
+
+    # THE FIX: Only notify transfer, DO NOT blacklist the token for restaurant switch
     if staff_data.restaurant_id is not None and staff_data.restaurant_id != old_restaurant_id:
-        if redis_client:
-            redis_client.setex(f"blacklist:{staff.id}", 86400, "revoked")
-        notify_staff_revoked(staff.id)
+        notify_staff_transferred(staff.id)
+
     return {"msg": f"Staff {staff.name} updated successfully."}
 
 @app.delete("/merchant/{merchant_id}/staff/{staff_id}")
@@ -441,6 +380,7 @@ def revoke_staff_access(merchant_id: int, staff_id: int, db: Session = Depends(g
         raise HTTPException(status_code=404, detail="Staff member not found or already revoked.")
     db.delete(staff)
     db.commit()
+    # Deletion should definitely blacklist the token
     if redis_client:
         redis_client.setex(f"blacklist:{staff_id}", 86400, "revoked")
     notify_staff_revoked(staff_id)
